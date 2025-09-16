@@ -6,6 +6,13 @@ import {
   updateClientProfile,
   createLostPetAlert,
   getOwnerPets,
+  getOwnerPetsOptimized,
+  getOwnerActiveLostPets,
+  updatePet,
+  createFoundPetSighting,
+  confirmPetMatch,
+  // ------
+  searchLostPetsFTS,
 } from "../utils/functions";
 
 // Interfaz para datos básicos de mascota (replicada desde functions.ts)
@@ -27,6 +34,7 @@ const basicPetDataSchema = z.object({
   species: z.string().optional(),
   breed: z.string().optional(),
   gender: z.string().optional(),
+  photo_url: z.string().url("La URL de la foto debe ser válida").optional(),
 });
 
 // Esquema Zod para validación de datos del perfil del cliente
@@ -47,7 +55,23 @@ const lostPetAlertSchema = z.object({
     .min(1, "La fecha y hora de la última vez vista es obligatoria"),
   lastSeenDescription: z.string().optional(),
   lastSeenLocation: z.string().optional(),
+  lastSeenCity: z.string().min(1, "La ciudad donde se perdió es OBLIGATORIA"),
+  lastSeenCountry: z.string().min(1, "El país donde se perdió es OBLIGATORIO"),
   additionalInfo: z.string().optional(),
+});
+
+// Esquema Zod para validación de actualización de mascota
+const updatePetSchema = z.object({
+  phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+  petIdentifier: z.string().min(1, "El identificador de la mascota (ID o nombre) es obligatorio"),
+  name: z.string().optional(),
+  species: z.string().optional(),
+  breed: z.string().optional(),
+  color: z.string().optional(),
+  birth_date: z.string().optional(),
+  gender: z.string().optional(),
+  photo_url: z.string().url("La URL de la foto debe ser válida").optional(),
+  distinguishing_marks: z.string().optional(),
 });
 
 // Tool de prueba
@@ -63,13 +87,23 @@ export const testTool = tool(
 );
 
 export const createPetTool = tool(
-  async ({ clientNumber, name, species, breed, gender }) => {
+  async ({ clientNumber, name, species, breed, gender, photo_url }) => {
+    // Validar formato de URL si se proporciona
+    if (photo_url && photo_url.trim() !== "") {
+      try {
+        new URL(photo_url.trim());
+      } catch (error) {
+        return "Error: La URL de la foto no es válida. Debe ser una URL completa (ej: https://ejemplo.com/imagen.jpg).";
+      }
+    }
+
     // Crear objeto PetData con los datos básicos
     const petData: PetData = {
       name: name.trim(),
       species: species?.trim() || undefined,
       breed: breed?.trim() || undefined,
       gender: gender?.trim() || undefined,
+      photo_url: photo_url?.trim() || undefined,
     };
 
     const petId = await createPet(clientNumber, petData);
@@ -79,7 +113,9 @@ export const createPetTool = tool(
         petData.name
       }${petData.species ? `, Especie: ${petData.species}` : ""}${
         petData.breed ? `, Raza: ${petData.breed}` : ""
-      }${petData.gender ? `, Género: ${petData.gender}` : ""}`;
+      }${petData.gender ? `, Género: ${petData.gender}` : ""}${
+        petData.photo_url ? `, Foto: ${petData.photo_url}` : ""
+      }`;
     } else {
       return "Error: No se pudo crear la mascota. Verifique los datos proporcionados.";
     }
@@ -87,7 +123,7 @@ export const createPetTool = tool(
   {
     name: "createPetTool",
     description:
-      "Crea una mascota asociada a un usuario por número de teléfono. Requiere al menos el nombre de la mascota. Los campos especie, raza y género son opcionales.",
+      "Crea una mascota asociada a un usuario por número de teléfono. Requiere al menos el nombre de la mascota. Los campos especie, raza, género y URL de foto son opcionales. La URL de la foto debe ser una URL válida.",
     schema: basicPetDataSchema,
   }
 );
@@ -136,6 +172,8 @@ export const createLostPetAlertTool = tool(
     lastSeenAt,
     lastSeenDescription,
     lastSeenLocation,
+    lastSeenCity,
+    lastSeenCountry,
     additionalInfo,
   }) => {
     // Validar formato de fecha básico
@@ -146,10 +184,17 @@ export const createLostPetAlertTool = tool(
       }
     }
 
+    // Combinar ubicación completa incluyendo ciudad y país
+    const fullLocation = [
+      lastSeenLocation?.trim(),
+      lastSeenCity?.trim(),
+      lastSeenCountry?.trim()
+    ].filter(Boolean).join(", ");
+
     const alertData = {
       last_seen_at: lastSeenAt.trim(),
       last_seen_description: lastSeenDescription?.trim() || undefined,
-      last_seen_location: lastSeenLocation?.trim() || undefined,
+      last_seen_location: fullLocation,
       additional_info: additionalInfo?.trim() || undefined,
     };
 
@@ -169,7 +214,7 @@ export const createLostPetAlertTool = tool(
   {
     name: "createLostPetAlertTool",
     description:
-      "Crea una alerta de mascota perdida para un propietario por número de teléfono. Requiere la fecha/hora de última vez vista. Si el propietario tiene múltiples mascotas, debe especificar el nombre de la mascota. Si solo tiene una mascota, se selecciona automáticamente. Los campos de descripción, ubicación e información adicional son opcionales.",
+      "Crea una alerta de mascota perdida para un propietario por número de teléfono. Requiere OBLIGATORIAMENTE: fecha/hora de última vez vista, ciudad y país donde se perdió. Si el propietario tiene múltiples mascotas, debe especificar el nombre de la mascota. Los campos de descripción, ubicación específica e información adicional son opcionales.",
     schema: lostPetAlertSchema,
   }
 );
@@ -189,11 +234,12 @@ export const getOwnerPetsTool = tool(
     const petList = pets
       .map((pet) => {
         const lostStatus = pet.is_currently_lost ? " (PERDIDA)" : "";
+        const photoInfo = pet.photo_url ? `\n  Foto: ${pet.photo_url}` : "";
         return `- ${pet.name}${lostStatus}\n  Especie: ${
           pet.species || "No especificada"
         }\n  Raza: ${pet.breed || "No especificada"}\n  Género: ${
           pet.gender || "No especificado"
-        }`;
+        }${photoInfo}`;
       })
       .join("\n\n");
 
@@ -202,9 +248,282 @@ export const getOwnerPetsTool = tool(
   {
     name: "getOwnerPetsTool",
     description:
-      "Obtiene la lista de mascotas registradas para un propietario por número de teléfono. Útil para ver las mascotas disponibles antes de crear una alerta de pérdida.",
+      "Obtiene la lista de mascotas registradas para un propietario por número de teléfono. Útil para ver las mascotas disponibles antes de crear una alerta de pérdida o para actualizar información.",
     schema: z.object({
       phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
     }),
+  }
+);
+
+export const getOwnerPetsOptimizedTool = tool(
+  async ({ phoneNumber }) => {
+    const pets = await getOwnerPetsOptimized(phoneNumber);
+
+    if (!pets) {
+      return "Error: No se pudo obtener la información del propietario o no tiene mascotas registradas.";
+    }
+
+    if (pets.length === 0) {
+      return "El propietario no tiene mascotas registradas.";
+    }
+
+    const petList = pets
+      .map((pet) => {
+        const alertStatus = pet.has_active_alert ? " (🚨 ALERTA ACTIVA)" : "";
+        const lastSeenInfo = pet.last_seen_at ? `\n  Última vez vista: ${new Date(pet.last_seen_at).toLocaleString()}` : "";
+        const photoInfo = pet.photo_url ? `\n  Foto: ${pet.photo_url}` : "";
+        return `- ${pet.name}${alertStatus}\n  Especie: ${
+          pet.species || "No especificada"
+        }\n  Raza: ${pet.breed || "No especificada"}\n  Género: ${
+          pet.gender || "No especificado"
+        }${lastSeenInfo}${photoInfo}`;
+      })
+      .join("\n\n");
+
+    return `Mascotas registradas para este propietario:\n\n${petList}`;
+  },
+  {
+    name: "getOwnerPetsOptimizedTool",
+    description:
+      "Versión optimizada que obtiene la lista de mascotas de un propietario incluyendo información de alertas activas. Más eficiente para mostrar el estado actual de las mascotas.",
+    schema: z.object({
+      phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+    }),
+  }
+);
+
+export const getOwnerActiveLostPetsTool = tool(
+  async ({ phoneNumber }) => {
+    const activePets = await getOwnerActiveLostPets(phoneNumber);
+
+    if (!activePets) {
+      return "Error: No se pudo obtener la información de alertas activas.";
+    }
+
+    if (activePets.length === 0) {
+      return "El propietario no tiene mascotas con alertas activas en este momento.";
+    }
+
+    const petList = activePets
+      .map((pet) => {
+        const photoInfo = pet.pet_photo_url ? `\n  Foto: ${pet.pet_photo_url}` : "";
+        const marksInfo = pet.distinguishing_marks ? `\n  Marcas distintivas: ${pet.distinguishing_marks}` : "";
+        const lastSeenInfo = pet.last_seen_at ? `\n  Última vez vista: ${new Date(pet.last_seen_at).toLocaleString()}` : "";
+        const locationInfo = pet.last_seen_description ? `\n  Descripción del lugar: ${pet.last_seen_description}` : "";
+        const notesInfo = pet.alert_notes ? `\n  Notas adicionales: ${pet.alert_notes}` : "";
+        
+        return `🚨 ${pet.pet_name}\n  Especie: ${
+          pet.species || "No especificada"
+        }\n  Raza: ${pet.breed || "No especificada"}\n  Color: ${
+          pet.color || "No especificado"
+        }\n  Género: ${
+          pet.gender || "No especificado"
+        }${marksInfo}${photoInfo}${lastSeenInfo}${locationInfo}${notesInfo}`;
+      })
+      .join("\n\n");
+
+    return `🔍 Mascotas con alertas activas:\n\n${petList}`;
+  },
+  {
+    name: "getOwnerActiveLostPetsTool",
+    description:
+      "Obtiene únicamente las mascotas con alertas activas de un propietario, con información completa de la alerta. Ideal para consultas rápidas sobre mascotas perdidas.",
+    schema: z.object({
+      phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+    }),
+  }
+);
+
+export const updatePetTool = tool(
+  async ({
+    phoneNumber,
+    petIdentifier,
+    name,
+    species,
+    breed,
+    color,
+    birth_date,
+    gender,
+    photo_url,
+    distinguishing_marks,
+  }) => {
+    // Validar que al menos un campo sea proporcionado para actualizar
+    const fieldsProvided = [
+      name,
+      species,
+      breed,
+      color,
+      birth_date,
+      gender,
+      photo_url,
+      distinguishing_marks,
+    ].filter(field => field !== undefined && field !== null && field !== "");
+
+    if (fieldsProvided.length === 0) {
+      return "Error: Debe proporcionar al menos un campo para actualizar (nombre, especie, raza, color, fecha de nacimiento, género, URL de foto o marcas distintivas).";
+    }
+
+    // Validar formato de URL si se proporciona
+    if (photo_url && photo_url.trim() !== "") {
+      try {
+        new URL(photo_url.trim());
+      } catch (error) {
+        return "Error: La URL de la foto no es válida. Debe ser una URL completa (ej: https://ejemplo.com/imagen.jpg).";
+      }
+    }
+
+    // Preparar los datos para actualizar
+    const petData: Partial<PetData> = {};
+    if (name) petData.name = name;
+    if (species) petData.species = species;
+    if (breed) petData.breed = breed;
+    if (color) petData.color = color;
+    if (birth_date) petData.birth_date = birth_date;
+    if (gender) petData.gender = gender;
+    if (photo_url) petData.photo_url = photo_url;
+    if (distinguishing_marks) petData.distinguishing_marks = distinguishing_marks;
+
+    const result = await updatePet(phoneNumber, petIdentifier, petData);
+
+    if (result) {
+      return result;
+    } else {
+      return "Error: No se pudo actualizar la mascota. Verifique que el número de teléfono sea correcto, que la mascota exista y que los datos proporcionados sean válidos.";
+    }
+  },
+  {
+    name: "updatePetTool",
+    description:
+      "Actualiza los datos de una mascota existente. Permite actualizar nombre, especie, raza, color, fecha de nacimiento, género, URL de foto y marcas distintivas. La mascota se identifica por su ID o nombre. Al menos un campo debe ser proporcionado para realizar la actualización.",
+    schema: updatePetSchema,
+  }
+);
+
+// Esquema Zod para crear avistamiento de mascota encontrada
+const createFoundPetSightingSchema = z.object({
+  finderPhone: z.string().min(1, "El número de teléfono de quien encontró la mascota es obligatorio"),
+  finderName: z.string().min(1, "El nombre de quien encontró la mascota es obligatorio"),
+  petDescription: z.string().min(1, "La descripción de la mascota encontrada es obligatoria"),
+  locationFound: z.string().min(1, "La ubicación donde se encontró la mascota es obligatoria"),
+  cityFound: z.string().min(1, "La ciudad donde se encontró es OBLIGATORIA"),
+  countryFound: z.string().min(1, "El país donde se encontró es OBLIGATORIO"),
+  photoUrl: z.string().url("La URL de la foto debe ser válida").optional(),
+});
+
+// Esquema Zod para confirmar match de mascota
+const confirmPetMatchSchema = z.object({
+  sightingId: z.string().min(1, "El ID del avistamiento es obligatorio"),
+  alertId: z.string().min(1, "El ID de la alerta de mascota perdida es obligatorio"),
+});
+
+export const createFoundPetSightingTool = tool(
+  async ({ finderPhone, finderName, petDescription, locationFound, cityFound, countryFound, photoUrl }) => {
+    // Validar formato de URL si se proporciona
+    if (photoUrl && photoUrl.trim() !== "") {
+      try {
+        new URL(photoUrl.trim());
+      } catch (error) {
+        return "Error: La URL de la foto no es válida. Debe ser una URL completa (ej: https://ejemplo.com/imagen.jpg).";
+      }
+    }
+
+    // Combinar ubicación completa incluyendo ciudad y país
+    const fullLocation = [
+      locationFound?.trim(),
+      cityFound?.trim(),
+      countryFound?.trim()
+    ].filter(Boolean).join(", ");
+
+    const sightingId = await createFoundPetSighting(
+      finderPhone,
+      finderName,
+      petDescription,
+      fullLocation,
+      photoUrl || undefined
+    );
+
+    if (sightingId) {
+      return `Avistamiento registrado exitosamente en ${cityFound}, ${countryFound}. ID del avistamiento: ${sightingId}. Ahora puedes usar este ID para confirmar el match con una alerta específica si encuentras una coincidencia.`;
+    } else {
+      return "Error: No se pudo registrar el avistamiento de la mascota encontrada. Verifique los datos proporcionados.";
+    }
+  },
+  {
+    name: "createFoundPetSightingTool",
+    description:
+      "Registra un avistamiento/reporte de una mascota encontrada en la base de datos. Requiere OBLIGATORIAMENTE: información de contacto de quien la encontró, descripción de la mascota, ubicación específica, ciudad y país donde se encontró. Opcionalmente una foto.",
+    schema: createFoundPetSightingSchema,
+  }
+);
+
+export const confirmPetMatchTool = tool(
+  async ({ sightingId, alertId }) => {
+    const result = await confirmPetMatch(sightingId, alertId);
+
+    if (result) {
+      return result;
+    } else {
+      return "Error: No se pudo confirmar el match entre la mascota encontrada y la alerta de pérdida. Verifique que los IDs sean correctos.";
+    }
+  },
+  {
+    name: "confirmPetMatchTool",
+    description:
+      "Confirma el match entre una mascota encontrada (avistamiento) y una alerta de mascota perdida específica. Esto conecta ambos registros y genera la notificación al dueño con la información de contacto de quien encontró la mascota.",
+    schema: confirmPetMatchSchema,
+  }
+);
+
+//! Prueba de consulta con Supabase Function
+// Esquema Zod para la nueva herramienta de búsqueda
+const findLostPetsSchema = z.object({
+  description: z
+    .string()
+    .min(5, "La descripción debe tener al menos 5 caracteres para ser efectiva."),
+});
+
+// --- LA NUEVA HERRAMIENTA ---
+
+export const findLostPetsTool = tool(
+  async ({ description }) => {
+    // 1. Llamar a la función de utilidad que habla con Supabase
+    const searchResult = await searchLostPetsFTS(description);
+
+    // 2. Manejar los posibles errores o casos sin resultados
+    if (searchResult.error) {
+      return searchResult.error;
+    }
+
+    if (searchResult.results.length === 0) {
+      return "No se encontraron mascotas perdidas que coincidan con la descripción proporcionada. Agradécele al usuario por su ayuda de todas formas.";
+    }
+
+    // 3. Formatear el resultado JSON en un string claro para la IA
+    //    Esta es la parte clave para solucionar el problema de contexto.
+    const formattedResults = searchResult.results.map((pet: any, index: number) => {
+        const ownerLocation = [pet.owner_neighborhood, pet.owner_city, pet.owner_country]
+            .filter(Boolean) // Elimina nulos o vacíos
+            .join(', ');
+
+        return `
+        Resultado ${index + 1} (Relevancia: ${Math.round(pet.rank * 100)}%):
+        - ID de Alerta: ${pet.alert_id}
+        - Nombre de Mascota: ${pet.pet_name}
+        - Descripción de Mascota: ${pet.species || ''} ${pet.breed || ''} de color ${pet.color || 'no especificado'}.
+        - Señas Particulares: ${pet.distinguishing_marks || 'Ninguna.'}
+        - Info de la Pérdida: Fue visto por última vez en "${pet.last_seen_description || 'no especificado'}".
+        - Dueño: ${pet.owner_name || 'No especificado'}.
+        - Ubicación del Dueño: ${ownerLocation || 'No especificada'}.
+        - Teléfono de Contacto del Dueño: ${pet.owner_phone}.
+        `;
+    }).join('\n---\n');
+
+    return `Se encontraron las siguientes mascotas perdidas. Presenta un resumen numerado al usuario y pídele que confirme si alguna coincide. **Guarda toda esta información para responder preguntas de seguimiento**:\n${formattedResults}`;
+  },
+  {
+    name: "find_lost_pets_by_description",
+    description:
+      "DEBES usar esta herramienta cuando un usuario te informa que ha encontrado una mascota y te da una descripción de ella. La entrada debe ser un texto detallado que describa la mascota y la ubicación donde fue encontrada (ej: 'gato tricolor con collar rojo en el parque de Belén'). La herramienta buscará en la base de datos y devolverá las coincidencias más probables con toda su información.",
+    schema: findLostPetsSchema,
   }
 );

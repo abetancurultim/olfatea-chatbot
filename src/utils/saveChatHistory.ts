@@ -9,6 +9,8 @@ dotenv.config();
 const supabaseUrl = process.env.SUPABASE_URL as string;
 const supabaseKey = process.env.SUPABASE_KEY as string;
 export const supabase = createClient(supabaseUrl, supabaseKey);
+const CHAT_HISTORY_TABLE = "chat_history";
+const MESSAGES_TABLE = "messages";
 
 /**
  * Guarda un mensaje en la base de datos, asegurando un único hilo de conversación por usuario (estilo WhatsApp).

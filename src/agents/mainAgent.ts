@@ -7,7 +7,16 @@ import {
   SystemMessage,
 } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
-import { createPetTool, updateProfileTool, createLostPetAlertTool, getOwnerPetsTool } from "../tools/tools";
+import { 
+  createPetTool, 
+  updateProfileTool, 
+  createLostPetAlertTool, 
+  getOwnerPetsOptimizedTool,
+  updatePetTool,
+  createFoundPetSightingTool,
+  confirmPetMatchTool,
+  findLostPetsTool,
+} from "../tools/tools";
 import { MESSAGES } from "../config/constants";
 
 dotenv.config();
@@ -15,17 +24,21 @@ dotenv.config();
 const memory = new MemorySaver();
 
 const llm = new ChatOpenAI({
-  temperature: 0,
-  model: "gpt-4o",
+  temperature: 0.4,
+  model: "gpt-4.1",
   apiKey: process.env.OPENAI_API_KEY,
-  maxTokens: 260,
+  maxTokens: 360,
 });
 
 const tools = [
   createPetTool,
+  updatePetTool,
   updateProfileTool,
+  getOwnerPetsOptimizedTool,
   createLostPetAlertTool,
-  getOwnerPetsTool,
+  findLostPetsTool, // Nueva herramienta avanzada
+  confirmPetMatchTool,
+  createFoundPetSightingTool, // Necesaria para registrar avistamientos sin match
 ];
 
 const createModifyMessages =
