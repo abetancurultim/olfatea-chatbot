@@ -14,7 +14,6 @@ import {
   getOwnerPetsOptimizedTool,
   updatePetTool,
   createFoundPetSightingTool,
-  confirmPetMatchTool,
   findLostPetsTool,
 } from "../tools/tools";
 import { MESSAGES } from "../config/constants";
@@ -37,8 +36,7 @@ const tools = [
   getOwnerPetsOptimizedTool,
   createLostPetAlertTool,
   findLostPetsTool, // Nueva herramienta avanzada
-  confirmPetMatchTool,
-  createFoundPetSightingTool, // Necesaria para registrar avistamientos sin match
+  createFoundPetSightingTool, // Herramienta UNIFICADA para avistamientos y matches
 ];
 
 const createModifyMessages =

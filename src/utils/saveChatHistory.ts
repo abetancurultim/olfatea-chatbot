@@ -132,3 +132,138 @@ export async function savePetAppMessage(
     return null;
   }
 }
+
+// Función para actualizar el SID de Twilio en un mensaje existente
+export async function updateMessageTwilioSid(
+  messageId: string,
+  twilioSid: string
+): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from(MESSAGES_TABLE)
+      .update({ twilio_sid: twilioSid })
+      .eq("id", messageId);
+
+    if (error) {
+      throw new Error(
+        `Error updating message with Twilio SID: ${error.message}`
+      );
+    }
+
+    console.log(`Message ${messageId} updated with Twilio SID: ${twilioSid}`);
+    return true;
+  } catch (error) {
+    console.error("Error in updateMessageTwilioSid:", error);
+    return false;
+  }
+}
+
+// Función para guardar mensajes de plantillas
+export async function saveTemplateChatHistory(
+  clientNumber: string,
+  newMessage: string,
+  isClient: boolean,
+  newMediaUrl: string,
+  user: string,
+  advisorId?: string // Mantener el parámetro para compatibilidad pero no usarlo
+): Promise<string | null> {
+  try {
+    const firebaseMediaUrl = newMediaUrl ? newMediaUrl : "";
+
+    // --- PASO 1: Asegurar que el perfil del usuario exista (Find or Create Profile) ---
+    let { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("phone_number", clientNumber)
+      .maybeSingle();
+
+    if (profileError) {
+      throw new Error(`Error buscando el perfil: ${profileError.message}`);
+    }
+
+    if (!profile) {
+      console.log(
+        `Perfil no encontrado para ${clientNumber}. Creando uno nuevo...`
+      );
+
+      // Crear perfil directamente sin autenticación de Supabase
+      const generatedId = uuidv4();
+
+      const { data: newProfile, error: newProfileError } = await supabase
+        .from("profiles")
+        .insert({
+          id: generatedId,
+          phone_number: clientNumber,
+        })
+        .select("id")
+        .single();
+
+      if (newProfileError) {
+        throw new Error(`Error creando el perfil: ${newProfileError.message}`);
+      }
+
+      profile = newProfile;
+      console.log(`Perfil creado con ID: ${profile.id}`);
+    }
+
+    const userId = profile.id;
+
+    // --- PASO 2: Asegurar que la conversación exista (Find or Create Chat History) ---
+    let { data: chatHistory, error: chatError } = await supabase
+      .from("chat_history")
+      .select("id")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (chatError) {
+      throw new Error(
+        `Error buscando el historial de chat: ${chatError.message}`
+      );
+    }
+
+    // Si no existe un historial de chat para este usuario, se crea uno.
+    if (!chatHistory) {
+      console.log(
+        `Creando historial de chat permanente para el usuario ${userId}`
+      );
+      const { data: newChat, error: newChatError } = await supabase
+        .from("chat_history")
+        .insert({ user_id: userId })
+        .select("id")
+        .single();
+
+      if (newChatError) {
+        throw new Error(
+          `Error creando el nuevo historial de chat: ${newChatError.message}`
+        );
+      }
+      chatHistory = newChat;
+    }
+
+    const chatId = chatHistory.id;
+
+    // --- PASO 3: Insertar el mensaje en la tabla 'messages' ---
+    const { data: messageData, error: messageError } = await supabase
+      .from("messages")
+      .insert({
+        chat_id: chatId,
+        sender: "notification", // Usar "notification" para plantillas del sistema
+        content: newMessage,
+        media_url: firebaseMediaUrl || null,
+      })
+      .select("id")
+      .single();
+
+    if (messageError) {
+      throw new Error(`Error insertando el mensaje: ${messageError.message}`);
+    }
+
+    console.log(
+      `Template message ${messageData.id} guardado en el chat ${chatId}`
+    );
+    return messageData.id;
+  } catch (error) {
+    console.error("Error in saveTemplateChatHistory:", error);
+    return null;
+  }
+}

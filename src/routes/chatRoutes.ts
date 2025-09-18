@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import { createAgentWithPhone } from "../agents/mainAgent";
 import { HumanMessage } from "@langchain/core/messages";
 import twilio from "twilio";
-import { savePetAppMessage } from "../utils/saveChatHistory";
+import { savePetAppMessage, saveTemplateChatHistory, updateMessageTwilioSid } from "../utils/saveChatHistory";
 import { initializeApp } from "firebase/app";
 import { OpenAI, toFile } from "openai";
 import fetch from "node-fetch";
@@ -20,6 +20,7 @@ import { ElevenLabsClient } from "elevenlabs";
 import { getAvailableForAudio } from "../utils/getAvailableForAudio";
 import { getAvailableChatOn } from "../utils/getAvailableChatOn";
 import { supabase } from "../utils/saveChatHistory";
+import axios from "axios";
 
 // Interfaces para tipos de Twilio
 interface TwilioStatusWebhook {
@@ -1420,6 +1421,81 @@ router.post("/olfatea/receive-message", async (req, res) => {
       );
       res.status(500).type("text/xml").send(twiml.toString());
     }
+  }
+});
+
+// Ruta para enviar una plantilla de WhatsApp
+router.post("/olfatea/send-template", async (req, res) => {
+  const { to, templateId, ownerName, petName, finderName, finderPhone, twilioPhoneNumber } = req.body; // Agregar advisorId
+
+  const user = "Notifications"; // Aquí puedes obtener el usuario real si tienes autenticación
+  const advisorId = req.body.advisorId || "Notifications"; // Obtener advisorId del cuerpo de la solicitud o usar "Notifications" por defecto
+
+  try {
+    const message = await client.messages.create({
+      // from: "whatsapp:+5742044644",
+      // from: `whatsapp:+14155238886`,
+      from: `whatsapp:${twilioPhoneNumber}`,
+      to: `whatsapp:${to}`,
+      contentSid: templateId,
+      // messagingServiceSid: "MGe5ebd75ff86ad20dbe6c0c1d09bfc081",
+      contentVariables: JSON.stringify({ 1: ownerName, 2: petName }),
+      statusCallback: `${statusCallbackUrl}/asadores/webhook/status`,
+    });
+    console.log("body", message.body);
+
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Traer el mensaje de la plantilla desde el endpoint /message/:sid con axios
+    const response = await axios.get(
+      // `https://ultim.online/olfatea/message/${message.sid}`
+      `https://72b80a218134.ngrok-free.app/olfatea/message/${message.sid}`
+    );
+
+    console.log("response", response.data.message.body);
+
+    // Guardar el mensaje en la base de datos sin advisor específico
+    const messageId = await saveTemplateChatHistory(
+      to,
+      response.data.message.body,
+      false,
+      "",
+      user
+    );
+
+    if (messageId && message.sid) {
+      await updateMessageTwilioSid(messageId, message.sid);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: response.data.message.body,
+      sid: message.sid,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error al enviar la plantilla",
+      error:
+        error instanceof Error ? error.message : "An unknown error occurred",
+    });
+  }
+});
+
+// Ruta para obtener detalles de un mensaje específico por SID
+router.get("/olfatea/message/:sid", async (req, res) => {
+  const { sid } = req.params;
+
+  try {
+    const message = await client.messages(sid).fetch();
+    res.status(200).json({ success: true, message });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Error al obtener el mensaje",
+      error:
+        error instanceof Error ? error.message : "An unknown error occurred",
+    });
   }
 });
 

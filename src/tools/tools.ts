@@ -10,7 +10,7 @@ import {
   getOwnerActiveLostPets,
   updatePet,
   createFoundPetSighting,
-  confirmPetMatch,
+  sendPetSightingNotification,
   // ------
   searchLostPetsFTS,
 } from "../utils/functions";
@@ -399,7 +399,7 @@ export const updatePetTool = tool(
   }
 );
 
-// Esquema Zod para crear avistamiento de mascota encontrada
+// Esquema Zod para crear avistamiento de mascota encontrada (unificado)
 const createFoundPetSightingSchema = z.object({
   finderPhone: z.string().min(1, "El número de teléfono de quien encontró la mascota es obligatorio"),
   finderName: z.string().min(1, "El nombre de quien encontró la mascota es obligatorio"),
@@ -408,16 +408,11 @@ const createFoundPetSightingSchema = z.object({
   cityFound: z.string().min(1, "La ciudad donde se encontró es OBLIGATORIA"),
   countryFound: z.string().min(1, "El país donde se encontró es OBLIGATORIO"),
   photoUrl: z.string().url("La URL de la foto debe ser válida").optional(),
-});
-
-// Esquema Zod para confirmar match de mascota
-const confirmPetMatchSchema = z.object({
-  sightingId: z.string().min(1, "El ID del avistamiento es obligatorio"),
-  alertId: z.string().min(1, "El ID de la alerta de mascota perdida es obligatorio"),
+  alertId: z.string().optional(), // Nuevo parámetro opcional para hacer match automático
 });
 
 export const createFoundPetSightingTool = tool(
-  async ({ finderPhone, finderName, petDescription, locationFound, cityFound, countryFound, photoUrl }) => {
+  async ({ finderPhone, finderName, petDescription, locationFound, cityFound, countryFound, photoUrl, alertId }) => {
     // Validar formato de URL si se proporciona
     if (photoUrl && photoUrl.trim() !== "") {
       try {
@@ -434,16 +429,53 @@ export const createFoundPetSightingTool = tool(
       countryFound?.trim()
     ].filter(Boolean).join(", ");
 
-    const sightingId = await createFoundPetSighting(
+    const result = await createFoundPetSighting(
       finderPhone,
       finderName,
       petDescription,
       fullLocation,
-      photoUrl || undefined
+      photoUrl || undefined,
+      alertId || undefined
     );
 
-    if (sightingId) {
-      return `Avistamiento registrado exitosamente en ${cityFound}, ${countryFound}. ID del avistamiento: ${sightingId}. Ahora puedes usar este ID para confirmar el match con una alerta específica si encuentras una coincidencia.`;
+    if (result) {
+      // Si es solo un avistamiento sin match
+      if (!result.isMatch) {
+        return `Avistamiento registrado exitosamente en ${cityFound}, ${countryFound}. ID del avistamiento: ${result.sightingId}. Este reporte quedará disponible para futuras alertas que coincidan.`;
+      }
+      
+      // Si es un match confirmado
+      const notificationStatus = result.notificationSent 
+        ? "✅ Notificación enviada exitosamente via WhatsApp!" 
+        : `⚠️ Error enviando notificación: ${result.notificationError}`;
+      
+      // Validar que tenemos la información necesaria para mostrar el match
+      if (!result.pet || !result.owner) {
+        return `Error: No se pudo obtener la información completa del match. ID del avistamiento: ${result.sightingId}`;
+      }
+      
+      const detailedMessage = `
+¡MASCOTA ENCONTRADA Y MATCH CONFIRMADO! 
+
+${result.pet.name} (${result.pet.species || 'mascota'} ${result.pet.breed || ''}) ha sido encontrada.
+
+DUEÑO:
+- Nombre: ${result.owner.name}
+- Teléfono: ${result.owner.phone}
+
+PERSONA QUE LA ENCONTRÓ:
+- Nombre: ${result.finder.name}  
+- Teléfono: ${result.finder.phone}
+- Ubicación: ${result.finder.location}
+- Descripción: ${result.finder.description}
+${result.finder.photoUrl ? `- Foto: ${result.finder.photoUrl}` : ''}
+
+📱 Estado de notificación: ${notificationStatus}
+
+El match ha sido confirmado automáticamente y ambas partes pueden contactarse directamente.
+      `.trim();
+
+      return detailedMessage;
     } else {
       return "Error: No se pudo registrar el avistamiento de la mascota encontrada. Verifique los datos proporcionados.";
     }
@@ -451,26 +483,8 @@ export const createFoundPetSightingTool = tool(
   {
     name: "createFoundPetSightingTool",
     description:
-      "Registra un avistamiento/reporte de una mascota encontrada en la base de datos. Requiere OBLIGATORIAMENTE: información de contacto de quien la encontró, descripción de la mascota, ubicación específica, ciudad y país donde se encontró. Opcionalmente una foto.",
+      "Herramienta UNIFICADA para registrar avistamientos de mascotas encontradas. Puede funcionar de dos formas: 1) Sin alertId: Solo registra el avistamiento para futuras coincidencias. 2) Con alertId: Registra + confirma match + envía notificación automáticamente. Requiere información de contacto, descripción, ubicación, ciudad y país. Opcionalmente foto y alertId para match automático.",
     schema: createFoundPetSightingSchema,
-  }
-);
-
-export const confirmPetMatchTool = tool(
-  async ({ sightingId, alertId }) => {
-    const result = await confirmPetMatch(sightingId, alertId);
-
-    if (result) {
-      return result;
-    } else {
-      return "Error: No se pudo confirmar el match entre la mascota encontrada y la alerta de pérdida. Verifique que los IDs sean correctos.";
-    }
-  },
-  {
-    name: "confirmPetMatchTool",
-    description:
-      "Confirma el match entre una mascota encontrada (avistamiento) y una alerta de mascota perdida específica. Esto conecta ambos registros y genera la notificación al dueño con la información de contacto de quien encontró la mascota.",
-    schema: confirmPetMatchSchema,
   }
 );
 

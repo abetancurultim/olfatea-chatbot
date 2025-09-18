@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import { v4 as uuidv4 } from "uuid";
+import axios from "axios";
 // Import colombia.json file
 
 dotenv.config();
@@ -76,6 +77,31 @@ interface LostPetAlertData {
   last_seen_description?: string;
   last_seen_location?: string;
   additional_info?: string;
+}
+
+// Interfaz para el resultado de createFoundPetSighting
+interface PetSightingResult {
+  success: boolean;
+  sightingId: string;
+  isMatch: boolean;
+  notificationSent: boolean;
+  notificationError: string | null;
+  pet: {
+    name: string;
+    species: string;
+    breed: string;
+  } | null;
+  owner: {
+    name: string;
+    phone: string;
+  } | null;
+  finder: {
+    name: string;
+    phone: string;
+    location: string;
+    description: string;
+    photoUrl: string | null;
+  };
 }
 
 /**
@@ -830,21 +856,24 @@ export async function updatePet(
 }
 
 /**
- * Función para crear un avistamiento/reporte de mascota encontrada
+ * Función unificada para crear un avistamiento/reporte de mascota encontrada
+ * Si se proporciona alertId, automáticamente hace el match y envía notificación
  * @param finderPhone Número de teléfono de quien encontró la mascota
  * @param finderName Nombre de quien encontró la mascota  
  * @param petDescription Descripción de la mascota encontrada
  * @param locationFound Ubicación donde se encontró
  * @param photoUrl URL de la foto de la mascota encontrada (opcional)
- * @returns El ID del avistamiento creado o null si hubo un error
+ * @param alertId ID de la alerta para hacer match automático (opcional)
+ * @returns Objeto con resultado del avistamiento y match (si aplica) o null si hubo un error
  */
 export async function createFoundPetSighting(
   finderPhone: string,
   finderName: string,
   petDescription: string,
   locationFound: string,
-  photoUrl?: string
-): Promise<string | null> {
+  photoUrl?: string,
+  alertId?: string
+): Promise<PetSightingResult | null> {
   try {
     console.log(`🔍 Creando avistamiento para finder: ${finderName} (${finderPhone})`);
 
@@ -852,7 +881,7 @@ export async function createFoundPetSighting(
     const { data: newSighting, error: sightingError } = await supabase
       .from("sightings")
       .insert({
-        alert_id: null, // Inicialmente null hasta que se confirme el match
+        alert_id: alertId || null, // Si hay alertId, asociarlo inmediatamente
         name: finderName.trim(),
         phone: finderPhone.trim(),
         sighted_at: new Date().toISOString(),
@@ -869,7 +898,112 @@ export async function createFoundPetSighting(
     }
 
     console.log(`✅ Avistamiento de mascota encontrada creado con ID: ${newSighting.id}`);
-    return newSighting.id;
+
+    // Preparar resultado base
+    const result: PetSightingResult = {
+      success: true,
+      sightingId: newSighting.id,
+      isMatch: !!alertId,
+      notificationSent: false,
+      notificationError: null,
+      pet: null,
+      owner: null,
+      finder: {
+        name: finderName,
+        phone: finderPhone,
+        location: locationFound,
+        description: petDescription,
+        photoUrl: photoUrl || null
+      }
+    };
+
+    // Si no hay alertId, es solo un avistamiento sin match
+    if (!alertId) {
+      console.log(`📝 Avistamiento registrado sin match. ID: ${newSighting.id}`);
+      return result;
+    }
+
+    // Si hay alertId, hacer el match automático y enviar notificación
+    console.log(`🔗 Procesando match automático con alerta: ${alertId}`);
+
+    // Validar que el alertId sea un UUID válido
+    if (!isValidUUID(alertId)) {
+      throw new Error(`El ID de la alerta no es válido: ${alertId}`);
+    }
+
+    try {
+      // Obtener información de la mascota y alerta
+      const { data: alertData, error: alertError } = await supabase
+        .from("lost_pet_alerts")
+        .select(`id, pet_id`)
+        .eq("id", alertId)
+        .single();
+
+      if (alertError) {
+        throw new Error(`Error obteniendo datos de la alerta: ${alertError.message}`);
+      }
+
+      // Obtener información de la mascota
+      const { data: petData, error: petError } = await supabase
+        .from("pets")
+        .select(`name, species, breed, owner_id`)
+        .eq("id", alertData.pet_id)
+        .single();
+
+      if (petError) {
+        throw new Error(`Error obteniendo datos de la mascota: ${petError.message}`);
+      }
+
+      // Obtener información del dueño
+      const { data: ownerData, error: ownerError } = await supabase
+        .from("profiles")
+        .select("full_name, phone_number")
+        .eq("id", petData.owner_id)
+        .single();
+
+      if (ownerError) {
+        throw new Error(`Error obteniendo datos del dueño: ${ownerError.message}`);
+      }
+
+      // Agregar información del match al resultado
+      result.pet = {
+        name: petData.name,
+        species: petData.species,
+        breed: petData.breed
+      };
+      result.owner = {
+        name: ownerData.full_name || 'No especificado',
+        phone: ownerData.phone_number
+      };
+
+      // Enviar notificación de Twilio automáticamente
+      try {
+        console.log(`📱 Enviando notificación automática a ${ownerData.phone_number}...`);
+        
+        await sendPetSightingNotification(
+          ownerData.phone_number,
+          ownerData.full_name || 'Propietario',
+          petData.name,
+          finderName,
+          finderPhone
+        );
+        
+        result.notificationSent = true;
+        console.log(`✅ Notificación enviada exitosamente`);
+        
+      } catch (notificationError: any) {
+        console.error(`❌ Error enviando notificación:`, notificationError);
+        result.notificationError = notificationError.message;
+      }
+
+      console.log(`🎯 Match confirmado entre avistamiento ${newSighting.id} y alerta ${alertId}`);
+      
+    } catch (matchError: any) {
+      console.error(`❌ Error en el match automático:`, matchError);
+      result.notificationError = `Error en match: ${matchError.message}`;
+    }
+
+    return result;
 
   } catch (error) {
     console.error("Error en createFoundPetSighting:", error);
@@ -882,12 +1016,12 @@ export async function createFoundPetSighting(
  * Función para confirmar el match y notificar al dueño
  * @param sightingId ID del avistamiento
  * @param alertId ID de la alerta de mascota perdida
- * @returns Mensaje de confirmación o null si hubo un error
+ * @returns Objeto con información del match y resultado de la notificación o null si hubo un error
  */
 export async function confirmPetMatch(
   sightingId: string,
   alertId: string
-): Promise<string | null> {
+): Promise<any | null> {
   try {
     // Validar que los IDs sean UUIDs válidos
     if (!isValidUUID(sightingId)) {
@@ -968,37 +1102,115 @@ export async function confirmPetMatch(
       throw new Error(`Error obteniendo datos del dueño: ${ownerError.message}`);
     }
 
-    // Aquí iría la lógica de notificación real (email, SMS, push, etc.)
-    // Por ahora retornamos un mensaje con toda la información
+    // Preparar datos estructurados para retornar
+    const matchResult = {
+      success: true,
+      pet: {
+        name: petData.name,
+        species: petData.species,
+        breed: petData.breed
+      },
+      owner: {
+        name: ownerData.full_name || 'No especificado',
+        phone: ownerData.phone_number
+      },
+      finder: {
+        name: sightingData.name || 'No especificado',
+        phone: sightingData.phone,
+        location: sightingData.location_description,
+        description: sightingData.comment,
+        photoUrl: sightingData.photo_url,
+        sightedAt: sightingData.sighted_at
+      },
+      notificationSent: false,
+      notificationError: null
+    };
 
-    const notificationMessage = `
-¡MASCOTA ENCONTRADA! 
-
-${petData.name} (${petData.species || 'mascota'} ${petData.breed || ''}) ha sido encontrada.
-
-DUEÑO:
-- Nombre: ${ownerData.full_name || 'No especificado'}
-- Teléfono: ${ownerData.phone_number}
-
-PERSONA QUE LA ENCONTRÓ:
-- Nombre: ${sightingData.name || 'No especificado'}  
-- Teléfono: ${sightingData.phone}
-- Ubicación: ${sightingData.location_description}
-- Fecha/Hora: ${new Date(sightingData.sighted_at).toLocaleString()}
-- Descripción: ${sightingData.comment}
-${sightingData.photo_url ? `- Foto: ${sightingData.photo_url}` : ''}
-
-El match ha sido confirmado y ambas partes pueden contactarse directamente.
-    `.trim();
+    // Enviar notificación de Twilio automáticamente
+    try {
+      console.log(`📱 Enviando notificación automática a ${ownerData.phone_number}...`);
+      
+      await sendPetSightingNotification(
+        ownerData.phone_number,
+        ownerData.full_name || 'Propietario',
+        petData.name,
+        sightingData.name,
+        sightingData.phone
+      );
+      
+      matchResult.notificationSent = true;
+      console.log(`✅ Notificación enviada exitosamente`);
+      
+    } catch (notificationError: any) {
+      console.error(`❌ Error enviando notificación:`, notificationError);
+      matchResult.notificationError = notificationError.message;
+    }
 
     console.log(`Match confirmado entre avistamiento ${sightingId} y alerta ${alertId}`);
-    return notificationMessage;
+    return matchResult;
 
   } catch (error) {
     console.error("Error en confirmPetMatch:", error);
     return null;
   }
 }
+
+/**
+ * Función para enviar notificación de avistamiento de mascota perdida a través de Twilio
+ * @param ownerPhone Número de teléfono del dueño de la mascota
+ * @param ownerName Nombre del dueño de la mascota
+ * @param petName Nombre de la mascota
+ * @param finderName Nombre de la persona que encontró la mascota (opcional para template actual)
+ * @param finderPhone Teléfono de la persona que encontró la mascota (opcional para template actual)
+ * @returns void
+ */
+export const sendPetSightingNotification = async (
+  ownerPhone: string,
+  ownerName: string,
+  petName: string,
+  finderName?: string,
+  finderPhone?: string
+): Promise<void> => {
+  try {
+    const templateUrl = "https://ultim.online/olfatea/send-template";
+    const testTemplateUrl = "http://localhost:3025/olfatea/send-template";
+
+    // Template provisional - solo requiere nombre del dueño y nombre de la mascota
+    const templateId = "HXcb06d9cb9511eb3bdf2eaaaa02f1a1a3";
+
+    const requestData = {
+      to: ownerPhone,
+      templateId: templateId,
+      ownerName: ownerName || "Dueño",
+      petName: petName || "Mascota",
+      // Datos del finder son opcionales en el template actual
+      finderName: finderName || "Alguien",
+      finderPhone: finderPhone || "No proporcionado",
+      twilioPhoneNumber: "+14707406662" // Número de Twilio de prueba
+    };
+
+    // Si se proporcionan datos del finder, los incluimos para futuro uso
+    if (finderName && finderPhone) {
+      console.log(`📝 Datos del finder disponibles: ${finderName} (${finderPhone}) - Listos para nuevo template`);
+    }
+
+    const response = await axios.post(testTemplateUrl, requestData);
+
+    console.log(`✅ Notificación de avistamiento enviada exitosamente a ${ownerPhone}:`, response.data);
+    console.log(`📱 Template usado: ${templateId} - Dueño: ${ownerName}, Mascota: ${petName}`);
+  } catch (error: any) {
+    if (error.response) {
+      console.error(`❌ Error enviando notificación de avistamiento:`, error.response.data);
+    } else if (error.request) {
+      console.error(`❌ No response from server:`, error.request);
+    } else {
+      console.error(`❌ Error:`, error.message);
+    }
+    
+    // Re-lanzar el error para que el caller pueda manejarlo
+    throw new Error(`Error enviando notificación: ${error.message}`);
+  }
+};
 
 //! Prueba de consulta con Supabase Function
 /**
