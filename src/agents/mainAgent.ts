@@ -15,6 +15,12 @@ import {
   updatePetTool,
   createFoundPetSightingTool,
   findLostPetsTool,
+  checkSubscriptionStatusTool,
+  // Nuevas herramientas de suscripción
+  validateCompleteProfileTool,
+  updateCompleteProfileTool,
+  initiateSubscriptionTool,
+  processPaymentProofTool,
 } from "../tools/tools";
 import { MESSAGES } from "../config/constants";
 
@@ -30,9 +36,16 @@ const llm = new ChatOpenAI({
 });
 
 const tools = [
+  checkSubscriptionStatusTool, // CRÍTICO: Siempre verificar suscripción primero
+  // Herramientas de suscripción
+  validateCompleteProfileTool, // Validar si perfil está completo para suscripción
+  updateCompleteProfileTool, // Actualizar perfil incluyendo neighborhood
+  initiateSubscriptionTool, // Mostrar información de pago
+  processPaymentProofTool, // Procesar comprobante de pago
+  // Herramientas de mascotas
   createPetTool,
   updatePetTool,
-  updateProfileTool,
+  updateProfileTool, // Mantener para casos básicos
   getOwnerPetsOptimizedTool,
   createLostPetAlertTool,
   findLostPetsTool, // Nueva herramienta avanzada

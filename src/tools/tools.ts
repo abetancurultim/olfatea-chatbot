@@ -11,8 +11,13 @@ import {
   updatePet,
   createFoundPetSighting,
   sendPetSightingNotification,
+  hasActiveSubscription,
   // ------
   searchLostPetsFTS,
+  // Nuevas funciones de suscripción
+  validateCompleteProfile,
+  initiateSubscriptionProcess,
+  processPaymentProof,
 } from "../utils/functions";
 
 // Interfaz para datos básicos de mascota (replicada desde functions.ts)
@@ -83,6 +88,48 @@ export const testTool = tool(
   {
     name: "testTool",
     description: "Tool de prueba",
+  }
+);
+
+export const checkSubscriptionStatusTool = tool(
+  async ({ phoneNumber }) => {
+    const subscriptionStatus = await hasActiveSubscription(phoneNumber);
+    
+    if (subscriptionStatus.active) {
+      return `✅ SUSCRIPCIÓN ACTIVA: ${subscriptionStatus.reason}. El usuario PUEDE registrar mascotas.`;
+    } else {
+      // Determinar el mensaje específico según el estado
+      let message = "";
+      let actionRequired = "";
+      
+      switch (subscriptionStatus.status) {
+        case 'expired':
+          message = `❌ SUSCRIPCIÓN EXPIRADA: ${subscriptionStatus.reason}`;
+          actionRequired = "Debe renovar su suscripción para continuar registrando mascotas.";
+          break;
+        case 'none':
+          if (subscriptionStatus.reason?.includes('no encontrado')) {
+            message = `❌ PERFIL NO ENCONTRADO: ${subscriptionStatus.reason}`;
+            actionRequired = "Debe registrarse y adquirir un plan de suscripción de $26.000 anuales.";
+          } else {
+            message = `❌ SIN SUSCRIPCIÓN: ${subscriptionStatus.reason}`;
+            actionRequired = "Debe adquirir un plan de suscripción de $26.000 anuales para registrar mascotas.";
+          }
+          break;
+        default:
+          message = `❌ PROBLEMA CON SUSCRIPCIÓN: ${subscriptionStatus.reason}`;
+          actionRequired = "Contacte soporte para resolver el problema con su suscripción.";
+      }
+      
+      return `${message}\n\n🚫 NO PUEDE REGISTRAR MASCOTAS.\n📞 ${actionRequired}\n\n💡 Una vez que tenga suscripción activa, podrá registrar todas las mascotas que desee.`;
+    }
+  },
+  {
+    name: "checkSubscriptionStatusTool",
+    description: "HERRAMIENTA CRÍTICA: Verifica si un usuario tiene suscripción activa ANTES de iniciar cualquier registro de mascota. DEBE usarse SIEMPRE antes de crear o modificar mascotas para evitar desperdiciar el tiempo del usuario recopilando información si no puede proceder.",
+    schema: z.object({
+      phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+    }),
   }
 );
 
@@ -539,5 +586,240 @@ export const findLostPetsTool = tool(
     description:
       "DEBES usar esta herramienta cuando un usuario te informa que ha encontrado una mascota y te da una descripción de ella. La entrada debe ser un texto detallado que describa la mascota y la ubicación donde fue encontrada (ej: 'gato tricolor con collar rojo en el parque de Belén'). La herramienta buscará en la base de datos y devolverá las coincidencias más probables con toda su información.",
     schema: findLostPetsSchema,
+  }
+);
+
+//! ================== HERRAMIENTAS DE SUSCRIPCIÓN ==================
+
+// Esquema Zod para validar perfil completo
+const validateCompleteProfileSchema = z.object({
+  phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+});
+
+// Esquema Zod para iniciar proceso de suscripción
+const initiateSubscriptionSchema = z.object({
+  phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+});
+
+// Esquema Zod para actualizar perfil completo (incluyendo neighborhood)
+const updateCompleteProfileSchema = z.object({
+  phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+  fullName: z.string().optional(),
+  email: z.string().email("Formato de email inválido").optional(),
+  city: z.string().optional(),
+  country: z.string().optional(),
+  neighborhood: z.string().optional(),
+});
+
+// Esquema Zod para procesar comprobante de pago
+const processPaymentProofSchema = z.object({
+  phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+  proofImageUrl: z.string().url("La URL de la imagen del comprobante debe ser válida").min(1, "La URL de la imagen del comprobante es obligatoria"),
+});
+
+export const validateCompleteProfileTool = tool(
+  async ({ phoneNumber }) => {
+    const result = await validateCompleteProfile(phoneNumber);
+
+    if (!result.profile) {
+      return "❌ No se encontró un perfil para este número de teléfono. Primero necesitas registrarte en el sistema.";
+    }
+
+    if (result.isComplete) {
+      return `✅ ¡Perfecto! Tu perfil está completo y listo para la suscripción:
+      
+📋 **Información Registrada:**
+• **Nombre:** ${result.profile.full_name}
+• **Email:** ${result.profile.email}
+• **Ciudad:** ${result.profile.city}
+• **País:** ${result.profile.country}  
+• **Barrio:** ${result.profile.neighborhood}
+• **Teléfono:** ${result.profile.phone_number}
+
+Ya puedes proceder con el proceso de suscripción.`;
+    } else {
+      const fieldNames: { [key: string]: string } = {
+        full_name: "Nombre completo",
+        email: "Email",
+        city: "Ciudad",
+        country: "País", 
+        neighborhood: "Barrio"
+      };
+      
+      const missingFieldsText = result.missingFields
+        .map(field => `• ${fieldNames[field] || field}`)
+        .join("\n");
+
+      return `⚠️ Tu perfil está incompleto. Para suscribirte a Olfatea necesitas completar los siguientes datos:
+
+${missingFieldsText}
+
+¿Podrías proporcionarme esta información para completar tu perfil?`;
+    }
+  },
+  {
+    name: "validateCompleteProfileTool",
+    description: "Verifica si el perfil de un usuario está completo con todos los datos requeridos para la suscripción (nombre, email, ciudad, país, barrio). Usar antes de iniciar proceso de suscripción.",
+    schema: validateCompleteProfileSchema,
+  }
+);
+
+export const updateCompleteProfileTool = tool(
+  async ({ phoneNumber, fullName, email, city, country, neighborhood }) => {
+    // Validar que al menos un campo adicional sea proporcionado
+    const fieldsProvided = [fullName, email, city, country, neighborhood].filter(
+      field => field !== undefined && field !== null && field !== ""
+    );
+
+    if (fieldsProvided.length === 0) {
+      return "❌ Debes proporcionar al menos un campo para actualizar tu perfil.";
+    }
+
+    // Usar la función updateClientProfile existente que acepta city y country,
+    // pero necesitamos extenderla para neighborhood
+    try {
+      // Primero, actualizar los campos básicos que ya están soportados
+      if (fullName || email || city || country) {
+        const basicResult = await updateClientProfile(
+          phoneNumber,
+          fullName || undefined,
+          email || undefined,
+          city || undefined,
+          country || undefined
+        );
+
+        if (!basicResult) {
+          return "❌ Error actualizando los datos básicos del perfil.";
+        }
+      }
+
+      // Si hay neighborhood, actualizarlo por separado
+      if (neighborhood && neighborhood.trim() !== "") {
+        const { supabase } = await import("../utils/functions");
+        
+        // Buscar el perfil por teléfono
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("phone_number", phoneNumber)
+          .maybeSingle();
+
+        if (profileError || !profile) {
+          return "❌ Error encontrando el perfil para actualizar el barrio.";
+        }
+
+        // Actualizar neighborhood
+        const { error: updateError } = await supabase
+          .from("profiles")
+          .update({ neighborhood: neighborhood.trim() })
+          .eq("id", profile.id);
+
+        if (updateError) {
+          return "❌ Error actualizando el barrio en el perfil.";
+        }
+      }
+
+      // Verificar si el perfil quedó completo
+      const validation = await validateCompleteProfile(phoneNumber);
+      
+      if (validation.isComplete) {
+        return `✅ ¡Perfecto! Tu perfil ha sido actualizado y ahora está completo:
+
+📋 **Información Actualizada:**
+• **Nombre:** ${validation.profile?.full_name}
+• **Email:** ${validation.profile?.email}
+• **Ciudad:** ${validation.profile?.city}
+• **País:** ${validation.profile?.country}  
+• **Barrio:** ${validation.profile?.neighborhood}
+
+Ya puedes proceder con la suscripción.`;
+      } else {
+        const fieldNames: { [key: string]: string } = {
+          full_name: "Nombre completo",
+          email: "Email", 
+          city: "Ciudad",
+          country: "País",
+          neighborhood: "Barrio"
+        };
+        
+        const missingFieldsText = validation.missingFields
+          .map(field => `• ${fieldNames[field] || field}`)
+          .join("\n");
+
+        return `✅ Perfil actualizado, pero aún faltan algunos datos:
+
+${missingFieldsText}
+
+¿Podrías proporcionar estos datos faltantes?`;
+      }
+
+    } catch (error) {
+      return `❌ Error actualizando el perfil: ${error}`;
+    }
+  },
+  {
+    name: "updateCompleteProfileTool",
+    description: "Actualiza el perfil del usuario con todos los datos necesarios para la suscripción, incluyendo nombre, email, ciudad, país y barrio. Extensión de updateProfileTool que incluye neighborhood.",
+    schema: updateCompleteProfileSchema,
+  }
+);
+
+export const initiateSubscriptionTool = tool(
+  async ({ phoneNumber }) => {
+    const result = await initiateSubscriptionProcess(phoneNumber);
+
+    if (!result.success) {
+      return result.message;
+    }
+
+    return `🎉 ¡Excelente! Tu perfil está completo y puedes proceder con la suscripción.
+
+💳 **Información para el Pago:**
+🏦 **Banco:** ${result.bankInfo.bank}
+💰 **Tipo de Cuenta:** ${result.bankInfo.accountType}
+🔢 **Número de Cuenta:** ${result.bankInfo.accountNumber}
+👤 **Titular:** ${result.bankInfo.accountHolder}
+📄 **NIT:** ${result.bankInfo.nit}
+💵 **Valor a Pagar:** ${result.bankInfo.amount}
+📝 **Concepto:** ${result.bankInfo.concept}
+
+📋 **Instrucciones:**
+1. Realiza la transferencia por el valor exacto de $26,000 COP
+2. Una vez hayas hecho el pago, **envíame una foto del comprobante de transferencia**
+3. Notificaré al equipo administrativo para validar tu pago
+4. En 24-48 horas hábiles recibirás la confirmación de activación
+
+⚠️ **Importante:** El comprobante de pago es obligatorio para activar tu suscripción.`;
+  },
+  {
+    name: "initiateSubscriptionTool", 
+    description: "Inicia el proceso de suscripción mostrando la información bancaria para el pago. Solo usar después de validar que el perfil está completo.",
+    schema: initiateSubscriptionSchema,
+  }
+);
+
+export const processPaymentProofTool = tool(
+  async ({ phoneNumber, proofImageUrl }) => {
+    const result = await processPaymentProof(phoneNumber, proofImageUrl);
+
+    if (!result.success) {
+      return `❌ ${result.message}`;
+    }
+
+    return `${result.message}
+
+📊 **Estado de tu Suscripción:** ${result.subscriptionStatus === 'pending' ? '🟡 Pendiente de Validación' : result.subscriptionStatus}
+
+✅ **Próximos Pasos:**
+• El equipo administrativo validará tu pago
+• Recibirás confirmación en 24-48 horas hábiles
+• Una vez activada, podrás registrar tus mascotas sin límites
+
+¡Gracias por confiar en Olfatea! 🐾`;
+  },
+  {
+    name: "processPaymentProofTool",
+    description: "Procesa el comprobante de pago enviado por el usuario y notifica al admin para validación. Usar solo cuando el usuario envíe la imagen del comprobante.",
+    schema: processPaymentProofSchema,
   }
 );

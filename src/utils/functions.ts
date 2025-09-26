@@ -104,65 +104,206 @@ interface PetSightingResult {
   };
 }
 
+// Interfaz para el estado de suscripción
+interface SubscriptionStatus {
+  active: boolean;
+  status: 'active' | 'expired' | 'none';
+  reason?: string;
+  profile?: {
+    id: string;
+    is_subscriber: boolean;
+    subscription_activated_at: string | null;
+    subscription_expires_at: string | null;
+  } | null;
+  expiresAt?: string;
+}
+
+// Interfaz para la respuesta estructurada de createPet
+interface CreatePetResult {
+  success: boolean;
+  petId?: string;
+  error?: {
+    code: 'SUBSCRIPTION_REQUIRED' | 'SUBSCRIPTION_EXPIRED' | 'SUBSCRIPTION_INVALID' | 'VALIDATION_ERROR' | 'DATABASE_ERROR';
+    message: string;
+    status?: string;
+  };
+}
+
+/**
+ * Función para validar si un usuario tiene una suscripción activa
+ * @param phoneNumber El número de teléfono del usuario
+ * @returns Objeto con estado de suscripción y detalles
+ */
+export async function hasActiveSubscription(phoneNumber: string): Promise<SubscriptionStatus> {
+  try {
+    // Consultar perfil del usuario
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, is_subscriber, subscription_activated_at, subscription_expires_at")
+      .eq("phone_number", phoneNumber)
+      .maybeSingle();
+
+    if (profileError) {
+      return {
+        active: false,
+        status: 'none',
+        reason: `Error consultando perfil: ${profileError.message}`,
+        profile: null
+      };
+    }
+
+    // Si no existe perfil
+    if (!profile) {
+      return {
+        active: false,
+        status: 'none',
+        reason: 'Perfil no encontrado - necesita registrarse y suscribirse',
+        profile: null
+      };
+    }
+
+    // Si no es suscriptor
+    if (!profile.is_subscriber) {
+      return {
+        active: false,
+        status: 'none',
+        reason: 'No tiene suscripción activa - debe adquirir plan de $26.000 anuales',
+        profile: profile
+      };
+    }
+
+    // Si es suscriptor pero faltan fechas (inconsistencia de datos)
+    if (!profile.subscription_activated_at || !profile.subscription_expires_at) {
+      return {
+        active: false,
+        status: 'none',
+        reason: 'Suscripción incompleta - contacte soporte para activar',
+        profile: profile
+      };
+    }
+
+    // Validar si la suscripción está vigente
+    const now = new Date();
+    const expiresAt = new Date(profile.subscription_expires_at);
+
+    if (now >= expiresAt) {
+      return {
+        active: false,
+        status: 'expired',
+        reason: `Suscripción expiró el ${expiresAt.toLocaleDateString('es-CO')} - renueve para continuar`,
+        profile: profile,
+        expiresAt: profile.subscription_expires_at
+      };
+    }
+
+    // Suscripción activa
+    return {
+      active: true,
+      status: 'active',
+      reason: `Suscripción activa hasta ${expiresAt.toLocaleDateString('es-CO')}`,
+      profile: profile,
+      expiresAt: profile.subscription_expires_at
+    };
+
+  } catch (error) {
+    console.error("Error en hasActiveSubscription:", error);
+    return {
+      active: false,
+      status: 'none',
+      reason: `Error técnico validando suscripción: ${error}`,
+      profile: null
+    };
+  }
+}
+
 /**
  * Función para crear una mascota asociada a un usuario por número de teléfono
+ * REQUIERE SUSCRIPCIÓN ACTIVA para poder registrar mascotas
  * @param clientNumber El número de teléfono del propietario
  * @param petData Datos de la mascota (mínimo: nombre)
- * @returns El ID de la mascota creada o null si hubo un error
+ * @returns Objeto con resultado de la operación
  */
 export async function createPet(
   clientNumber: string,
   petData: PetData
-): Promise<string | null> {
+): Promise<CreatePetResult> {
   try {
     // Validar datos mínimos requeridos
     if (!petData.name || petData.name.trim() === "") {
-      throw new Error("El nombre de la mascota es obligatorio");
+      return {
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: "El nombre de la mascota es obligatorio"
+        }
+      };
     }
 
-    // --- PASO 1: Buscar o crear el perfil del usuario ---
-    let { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("phone_number", clientNumber)
-      .maybeSingle();
-
-    if (profileError) {
-      throw new Error(`Error buscando el perfil: ${profileError.message}`);
+    // --- VALIDACIÓN DE SUSCRIPCIÓN ---
+    console.log(`🔐 Validando suscripción para ${clientNumber}...`);
+    const subscriptionCheck = await hasActiveSubscription(clientNumber);
+    
+    if (!subscriptionCheck.active) {
+      const errorCode = subscriptionCheck.status === 'expired' 
+        ? 'SUBSCRIPTION_EXPIRED' 
+        : subscriptionCheck.status === 'none'
+        ? 'SUBSCRIPTION_REQUIRED'
+        : 'SUBSCRIPTION_INVALID';
+        
+      return {
+        success: false,
+        error: {
+          code: errorCode,
+          message: subscriptionCheck.reason || 'Suscripción requerida para registrar mascotas',
+          status: subscriptionCheck.status
+        }
+      };
     }
 
-    if (!profile) {
-      console.log(
-        `Perfil no encontrado para ${clientNumber}. Creando uno nuevo...`
-      );
+    console.log(`✅ Suscripción activa verificada para ${clientNumber}`);
 
-      // Crear perfil directamente sin autenticación de Supabase
-      const generatedId = uuidv4();
-
-      const { data: newProfile, error: newProfileError } = await supabase
+    // --- BUSCAR O CREAR PERFIL ---
+    let profileId: string;
+    
+    if (subscriptionCheck.profile) {
+      // Ya tenemos el perfil de la validación de suscripción
+      profileId = subscriptionCheck.profile.id;
+    } else {
+      // Caso edge: perfil no existía pero se creó en otro lugar
+      let { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .insert({
-          id: generatedId,
-          phone_number: clientNumber,
-        })
         .select("id")
-        .single();
+        .eq("phone_number", clientNumber)
+        .maybeSingle();
 
-      if (newProfileError) {
-        throw new Error(`Error creando el perfil: ${newProfileError.message}`);
+      if (profileError) {
+        return {
+          success: false,
+          error: {
+            code: 'DATABASE_ERROR',
+            message: `Error buscando el perfil: ${profileError.message}`
+          }
+        };
       }
 
-      profile = newProfile;
-      console.log(`Perfil creado con ID: ${profile.id}`);
+      if (!profile) {
+        return {
+          success: false,
+          error: {
+            code: 'SUBSCRIPTION_REQUIRED',
+            message: 'Perfil no encontrado - debe registrarse y suscribirse primero'
+          }
+        };
+      }
+
+      profileId = profile.id;
     }
 
-    const ownerId = profile.id;
-
-    // --- PASO 2: Crear la mascota ---
+    // --- CREAR LA MASCOTA ---
     const { data: newPet, error: petError } = await supabase
       .from("pets")
       .insert({
-        owner_id: ownerId,
+        owner_id: profileId,
         name: petData.name.trim(),
         species: petData.species?.trim() || null,
         breed: petData.breed?.trim() || null,
@@ -171,22 +312,37 @@ export async function createPet(
         gender: petData.gender?.trim() || null,
         photo_url: petData.photo_url?.trim() || null,
         distinguishing_marks: petData.distinguishing_marks?.trim() || null,
-        is_currently_lost: false, // Por defecto, la mascota no está perdida
+        is_currently_lost: false,
       })
       .select("id")
       .single();
 
     if (petError) {
-      throw new Error(`Error creando la mascota: ${petError.message}`);
+      return {
+        success: false,
+        error: {
+          code: 'DATABASE_ERROR',
+          message: `Error creando la mascota: ${petError.message}`
+        }
+      };
     }
 
-    console.log(
-      `Mascota creada con ID: ${newPet.id} para el propietario: ${ownerId}`
-    );
-    return newPet.id;
+    console.log(`🐾 Mascota creada exitosamente: ${newPet.id} para propietario: ${profileId}`);
+    
+    return {
+      success: true,
+      petId: newPet.id
+    };
+
   } catch (error) {
     console.error("Error en createPet:", error);
-    return null;
+    return {
+      success: false,
+      error: {
+        code: 'DATABASE_ERROR',
+        message: `Error inesperado: ${error}`
+      }
+    };
   }
 }
 
@@ -1246,4 +1402,416 @@ export async function searchLostPetsFTS(userDescription: string): Promise<any> {
     results: matches,
     message: `Se encontraron ${matches.length} posibles coincidencias.`
   };
+}
+
+//! ================== FUNCIONES DE SUSCRIPCIÓN ==================
+
+// Interfaz para el resultado de validación de perfil completo
+interface ProfileValidationResult {
+  isComplete: boolean;
+  missingFields: string[];
+  profile: {
+    id: string;
+    phone_number: string;
+    full_name?: string;
+    email?: string;
+    city?: string;
+    country?: string;
+    neighborhood?: string;
+    subscription_status?: string;
+  } | null;
+}
+
+// Interfaz para el resultado de iniciar proceso de suscripción
+interface SubscriptionProcessResult {
+  success: boolean;
+  profileComplete: boolean;
+  missingFields: string[];
+  bankInfo: {
+    bank: string;
+    accountType: string;
+    accountNumber: string;
+    accountHolder: string;
+    nit: string;
+    amount: string;
+    concept: string;
+  };
+  message: string;
+}
+
+// Interfaz para el resultado de procesar comprobante de pago
+interface PaymentProofResult {
+  success: boolean;
+  adminNotified: boolean;
+  subscriptionStatus: string;
+  message: string;
+  error?: string;
+}
+
+/**
+ * Función para validar si el perfil de un usuario está completo para suscribirse
+ * @param phoneNumber El número de teléfono del usuario
+ * @returns Objeto con estado del perfil y campos faltantes
+ */
+export async function validateCompleteProfile(phoneNumber: string): Promise<ProfileValidationResult> {
+  try {
+    console.log(`🔍 Validando perfil completo para ${phoneNumber}...`);
+
+    // Buscar el perfil del usuario
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, phone_number, full_name, email, city, country, neighborhood, subscription_status")
+      .eq("phone_number", phoneNumber)
+      .maybeSingle();
+
+    if (profileError) {
+      throw new Error(`Error buscando el perfil: ${profileError.message}`);
+    }
+
+    if (!profile) {
+      console.log(`❌ No se encontró perfil para ${phoneNumber}`);
+      return {
+        isComplete: false,
+        missingFields: ["full_name", "email", "city", "country", "neighborhood"],
+        profile: null
+      };
+    }
+
+    // Definir campos obligatorios para suscripción
+    const requiredFields = [
+      { field: "full_name", value: profile.full_name },
+      { field: "email", value: profile.email },
+      { field: "city", value: profile.city },
+      { field: "country", value: profile.country },
+      { field: "neighborhood", value: profile.neighborhood }
+    ];
+
+    // Identificar campos faltantes
+    const missingFields = requiredFields
+      .filter(({ value }) => !value || value.trim() === "")
+      .map(({ field }) => field);
+
+    const isComplete = missingFields.length === 0;
+
+    console.log(`✅ Validación de perfil completa. Completo: ${isComplete}, Campos faltantes: ${missingFields.join(", ")}`);
+
+    return {
+      isComplete,
+      missingFields,
+      profile
+    };
+
+  } catch (error) {
+    console.error("Error en validateCompleteProfile:", error);
+    return {
+      isComplete: false,
+      missingFields: ["full_name", "email", "city", "country", "neighborhood"],
+      profile: null
+    };
+  }
+}
+
+/**
+ * Función para iniciar el proceso de suscripción
+ * @param phoneNumber El número de teléfono del usuario
+ * @returns Objeto con información del proceso y datos bancarios
+ */
+export async function initiateSubscriptionProcess(phoneNumber: string): Promise<SubscriptionProcessResult> {
+  try {
+    console.log(`🚀 Iniciando proceso de suscripción para ${phoneNumber}...`);
+
+    // Validar perfil completo
+    const profileValidation = await validateCompleteProfile(phoneNumber);
+
+    // Información bancaria provisional para pruebas
+    const bankInfo = {
+      bank: "Bancolombia",
+      accountType: "Cuenta de Ahorros",
+      accountNumber: "123-456-789-01",
+      accountHolder: "Olfatea SAS",
+      nit: "123.456.789-1",
+      amount: "$26,000 COP",
+      concept: "Suscripción Anual Olfatea"
+    };
+
+    if (!profileValidation.isComplete) {
+      console.log(`⚠️ Perfil incompleto. Campos faltantes: ${profileValidation.missingFields.join(", ")}`);
+      return {
+        success: false,
+        profileComplete: false,
+        missingFields: profileValidation.missingFields,
+        bankInfo,
+        message: `Para continuar con la suscripción, necesito que completes tu información de perfil. Faltan los siguientes datos: ${profileValidation.missingFields.join(", ")}.`
+      };
+    }
+
+    console.log(`✅ Perfil completo. Mostrando información de pago...`);
+
+    return {
+      success: true,
+      profileComplete: true,
+      missingFields: [],
+      bankInfo,
+      message: "Tu perfil está completo. Aquí tienes la información para realizar el pago de la suscripción anual ($26,000 COP)."
+    };
+
+  } catch (error) {
+    console.error("Error en initiateSubscriptionProcess:", error);
+    return {
+      success: false,
+      profileComplete: false,
+      missingFields: ["full_name", "email", "city", "country", "neighborhood"],
+      bankInfo: {
+        bank: "Bancolombia",
+        accountType: "Cuenta de Ahorros", 
+        accountNumber: "123-456-789-01",
+        accountHolder: "Olfatea SAS",
+        nit: "123.456.789-1",
+        amount: "$26,000 COP",
+        concept: "Suscripción Anual Olfatea"
+      },
+      message: `Error técnico iniciando el proceso de suscripción: ${error}`
+    };
+  }
+}
+
+/**
+ * Función para procesar el comprobante de pago y notificar al admin
+ * @param phoneNumber El número de teléfono del usuario
+ * @param proofImageUrl La URL de la imagen del comprobante
+ * @returns Objeto con resultado del procesamiento
+ */
+export async function processPaymentProof(
+  phoneNumber: string,
+  proofImageUrl: string
+): Promise<PaymentProofResult> {
+  try {
+    console.log(`🧾 Procesando comprobante de pago para ${phoneNumber}...`);
+
+    // Validar URL de imagen
+    if (!proofImageUrl || !proofImageUrl.trim()) {
+      return {
+        success: false,
+        adminNotified: false,
+        subscriptionStatus: "inactive",
+        message: "La URL del comprobante es requerida.",
+        error: "URL de imagen faltante"
+      };
+    }
+
+    // Validar que sea una URL válida
+    try {
+      new URL(proofImageUrl);
+    } catch {
+      return {
+        success: false,
+        adminNotified: false,
+        subscriptionStatus: "inactive",
+        message: "La URL del comprobante no es válida.",
+        error: "URL de imagen inválida"
+      };
+    }
+
+    // Obtener datos completos del perfil
+    const profileValidation = await validateCompleteProfile(phoneNumber);
+
+    if (!profileValidation.profile) {
+      return {
+        success: false,
+        adminNotified: false,
+        subscriptionStatus: "inactive",
+        message: "No se encontró el perfil del usuario.",
+        error: "Perfil no encontrado"
+      };
+    }
+
+    if (!profileValidation.isComplete) {
+      return {
+        success: false,
+        adminNotified: false,
+        subscriptionStatus: "inactive",
+        message: `Perfil incompleto. Faltan: ${profileValidation.missingFields.join(", ")}`,
+        error: "Perfil incompleto"
+      };
+    }
+
+    // Actualizar estado de suscripción a "pending"
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({ subscription_status: "pending" })
+      .eq("phone_number", phoneNumber);
+
+    if (updateError) {
+      throw new Error(`Error actualizando estado de suscripción: ${updateError.message}`);
+    }
+
+    // Enviar notificación al admin
+    let adminNotified = false;
+    try {
+      await sendAdminNotificationEmail(profileValidation.profile, proofImageUrl);
+      adminNotified = true;
+      console.log(`📧 Admin notificado exitosamente para ${phoneNumber}`);
+    } catch (emailError) {
+      console.error("Error enviando email al admin:", emailError);
+      // No fallar todo el proceso por error de email
+    }
+
+    console.log(`✅ Comprobante procesado exitosamente para ${phoneNumber}`);
+
+    return {
+      success: true,
+      adminNotified,
+      subscriptionStatus: "pending",
+      message: `¡Perfecto! He recibido tu comprobante de pago. ${adminNotified ? 'He notificado al equipo administrativo' : 'Estoy notificando al equipo administrativo'} para que validen el pago y activen tu suscripción. Esto puede tomar entre 24-48 horas hábiles. Te confirmaremos por este medio cuando esté lista.`
+    };
+
+  } catch (error) {
+    console.error("Error en processPaymentProof:", error);
+    return {
+      success: false,
+      adminNotified: false,
+      subscriptionStatus: "inactive",
+      message: `Error técnico procesando el comprobante: ${error}`,
+      error: error instanceof Error ? error.message : "Error desconocido"
+    };
+  }
+}
+
+/**
+ * Función para enviar email de notificación al admin sobre nueva suscripción pendiente
+ * @param profileData Datos del perfil del usuario
+ * @param proofImageUrl URL de la imagen del comprobante
+ * @returns void
+ */
+export async function sendAdminNotificationEmail(
+  profileData: any,
+  proofImageUrl: string
+): Promise<void> {
+  try {
+    console.log(`📧 Enviando notificación de suscripción al admin...`);
+
+    // Configurar transporter de nodemailer con SendGrid
+    const transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: parseInt(process.env.EMAIL_PORT || "587"),
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    // HTML template para el email
+    const emailHtml = `
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Nueva Suscripción Pendiente - Olfatea</title>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background-color: #f9f9f9; padding: 30px; border: 1px solid #ddd; }
+        .user-info { background-color: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .info-row { display: flex; margin: 10px 0; }
+        .info-label { font-weight: bold; min-width: 120px; }
+        .proof-section { background-color: #e8f5e8; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .button { display: inline-block; background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+        .footer { background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🐾 Nueva Suscripción Pendiente - Olfatea</h1>
+        </div>
+        
+        <div class="content">
+          <p><strong>¡Tienes una nueva solicitud de suscripción para validar!</strong></p>
+          
+          <div class="user-info">
+            <h3>📋 Datos del Usuario</h3>
+            <div class="info-row">
+              <span class="info-label">Nombre Completo:</span>
+              <span>${profileData.full_name || 'No especificado'}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Teléfono:</span>
+              <span>${profileData.phone_number}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Email:</span>
+              <span>${profileData.email || 'No especificado'}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Ciudad:</span>
+              <span>${profileData.city || 'No especificado'}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">País:</span>
+              <span>${profileData.country || 'No especificado'}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Barrio:</span>
+              <span>${profileData.neighborhood || 'No especificado'}</span>
+            </div>
+          </div>
+
+          <div class="proof-section">
+            <h3>🧾 Comprobante de Pago</h3>
+            <p>El usuario ha enviado el siguiente comprobante de pago:</p>
+            <a href="${proofImageUrl}" target="_blank" class="button">Ver Comprobante de Pago</a>
+            <p><small>URL: ${proofImageUrl}</small></p>
+          </div>
+
+          <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107;">
+            <h4>⚡ Acciones a Realizar:</h4>
+            <ol>
+              <li>Verificar el comprobante de pago haciendo clic en el botón superior</li>
+              <li>Validar que el monto sea de $26,000 COP</li>
+              <li>Confirmar que el pago haya llegado a la cuenta de Olfatea</li>
+              <li>Si todo está correcto, activar la suscripción en el panel administrativo</li>
+              <li>Notificar al usuario vía WhatsApp sobre la activación</li>
+            </ol>
+          </div>
+
+          <div style="background-color: #d1ecf1; padding: 15px; border-radius: 8px; border-left: 4px solid #17a2b8; margin-top: 20px;">
+            <h4>💰 Detalles de la Suscripción:</h4>
+            <p><strong>Plan:</strong> Suscripción Anual Olfatea<br>
+            <strong>Monto:</strong> $26,000 COP<br>
+            <strong>Duración:</strong> 12 meses<br>
+            <strong>Estado Actual:</strong> Pendiente de Validación</p>
+          </div>
+        </div>
+
+        <div class="footer">
+          <p>Este es un mensaje automático del sistema de suscripciones de Olfatea.<br>
+          Por favor, procesa esta solicitud lo antes posible.</p>
+          <small>Fecha: ${new Date().toLocaleString('es-CO')}</small>
+        </div>
+      </div>
+    </body>
+    </html>`;
+
+    // Configurar opciones del email
+    const mailOptions = {
+      from: '"Olfatea - Sistema Automático" <sistema@olfatea.com>',
+      to: process.env.ADMIN_EMAIL || "admin@olfatea.com",
+      cc: [
+        // Puedes agregar más destinatarios aquí si es necesario
+      ],
+      subject: `🐾 Nueva Suscripción Pendiente - ${profileData.full_name || 'Usuario'} (${profileData.phone_number})`,
+      html: emailHtml
+    };
+
+    // Enviar el email
+    await transporter.sendMail(mailOptions);
+    
+    console.log(`✅ Email de notificación enviado exitosamente al admin`);
+
+  } catch (error: any) {
+    console.error(`❌ Error enviando email de notificación al admin:`, error);
+    throw new Error(`Error enviando email de notificación: ${error.message}`);
+  }
 }
