@@ -1,7 +1,7 @@
 module.exports = {
     apps: [
       {
-        name: "pet-app-chatbot",
+        name: "olfatea",
         script: "dist/index.js", // Asegúrate de que apunte al archivo compilado.
         instances: 1, // Cambia a "max" si quieres usar todos los núcleos de CPU.
         autorestart: true,
