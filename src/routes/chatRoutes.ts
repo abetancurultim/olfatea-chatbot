@@ -1419,7 +1419,7 @@ router.post("/olfatea/send-template", async (req, res) => {
       to: `whatsapp:${to}`,
       contentSid: templateId,
       // messagingServiceSid: "MGe5ebd75ff86ad20dbe6c0c1d09bfc081",
-      contentVariables: JSON.stringify({ 1: ownerName, 2: petName }),
+      contentVariables: JSON.stringify({ 1: ownerName, 2: petName, 3: finderName, 4: finderPhone }),
       statusCallback: `${statusCallbackUrl}/asadores/webhook/status`,
     });
     console.log("body", message.body);

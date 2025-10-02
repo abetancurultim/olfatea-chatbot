@@ -1609,7 +1609,7 @@ export const sendPetSightingNotification = async (
     const testTemplateUrl = "http://localhost:3025/olfatea/send-template";
 
     // Template provisional - solo requiere nombre del dueño y nombre de la mascota
-    const templateId = "HXcb06d9cb9511eb3bdf2eaaaa02f1a1a3";
+    const templateId = "HX15b0e1d8a3505cb4d2723e03b4337e6f";
 
     const requestData = {
       to: ownerPhone,
