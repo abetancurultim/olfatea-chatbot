@@ -22,7 +22,7 @@ import {
   validateCompleteProfile,
   initiateSubscriptionProcess,
   processPaymentProof,
-} from "../utils/functions";
+} from "../utils/functions.js";
 
 // Interfaz para datos básicos de mascota (replicada desde functions.ts)
 interface PetData {

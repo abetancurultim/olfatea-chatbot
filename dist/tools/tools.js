@@ -13,7 +13,7 @@ import { testFunction, createPet, updateClientProfile, createLostPetAlert, getOw
 // ------
 searchLostPetsFTS, 
 // Nuevas funciones de suscripción
-validateCompleteProfile, initiateSubscriptionProcess, processPaymentProof, } from "../utils/functions";
+validateCompleteProfile, initiateSubscriptionProcess, processPaymentProof, } from "../utils/functions.js";
 // Esquema Zod para validación de datos básicos de mascota
 const basicPetDataSchema = z.object({
     clientNumber: z.string().min(1, "El número de teléfono es obligatorio"),

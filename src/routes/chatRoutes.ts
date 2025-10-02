@@ -1,10 +1,10 @@
 import express from "express";
 import dotenv from "dotenv";
 import { v4 as uuidv4 } from "uuid";
-import { createAgentWithPhone } from "../agents/mainAgent";
+import { createAgentWithPhone } from "../agents/mainAgent.js";
 import { HumanMessage } from "@langchain/core/messages";
 import twilio from "twilio";
-import { savePetAppMessage, saveTemplateChatHistory, updateMessageTwilioSid } from "../utils/saveChatHistory";
+import { savePetAppMessage, saveTemplateChatHistory, updateMessageTwilioSid } from "../utils/saveChatHistory.js";
 import { initializeApp } from "firebase/app";
 import { OpenAI, toFile } from "openai";
 import fetch from "node-fetch";
@@ -17,10 +17,10 @@ import {
   uploadBytesResumable,
 } from "firebase/storage";
 import { ElevenLabsClient } from "elevenlabs";
-import { getAvailableForAudio } from "../utils/getAvailableForAudio";
-import { getAvailableChatOn } from "../utils/getAvailableChatOn";
-import { supabase } from "../utils/saveChatHistory";
-import { sendWelcomeEmail } from "../utils/functions";
+import { getAvailableForAudio } from "../utils/getAvailableForAudio.js";
+import { getAvailableChatOn } from "../utils/getAvailableChatOn.js";
+import { supabase } from "../utils/saveChatHistory.js";
+import { sendWelcomeEmail } from "../utils/functions.js";
 import axios from "axios";
 
 // Interfaces para tipos de Twilio

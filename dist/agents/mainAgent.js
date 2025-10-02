@@ -7,8 +7,8 @@ import { createPetTool, updateProfileTool, createLostPetAlertTool, getOwnerPetsO
 // Nuevas herramientas de suscripción
 validateCompleteProfileTool, updateCompleteProfileTool, initiateSubscriptionTool, processPaymentProofTool, 
 // Nuevas herramientas de planes
-showAvailablePlansTool, validateCurrentPetLimitTool, } from "../tools/tools";
-import { MESSAGES } from "../config/constants";
+showAvailablePlansTool, validateCurrentPetLimitTool, } from "../tools/tools.js";
+import { MESSAGES } from "../config/constants.js";
 dotenv.config();
 const memory = new MemorySaver();
 const llm = new ChatOpenAI({

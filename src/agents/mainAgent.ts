@@ -24,8 +24,8 @@ import {
   // Nuevas herramientas de planes
   showAvailablePlansTool,
   validateCurrentPetLimitTool,
-} from "../tools/tools";
-import { MESSAGES } from "../config/constants";
+} from "../tools/tools.js";
+import { MESSAGES } from "../config/constants.js";
 
 dotenv.config();
 
