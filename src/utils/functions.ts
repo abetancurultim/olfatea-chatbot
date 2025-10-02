@@ -61,27 +61,141 @@ export const testFunction = async () => {
 };
 
 /**
- * Función para obtener los detalles de un plan específico
- * @param planId El ID del plan a consultar
+ * Función para obtener los detalles de un plan específico por ID o nombre
+ * @param planIdentifier El ID o nombre del plan a consultar
  * @returns Objeto con los datos del plan o null si no existe
  */
-export async function getPlanDetails(planId: string): Promise<Plan | null> {
+export async function getPlanDetails(planIdentifier: string): Promise<Plan | null> {
   try {
+    console.log(`🔍 Buscando plan con identificador: "${planIdentifier}"`);
+    
+    // Primero intentar buscar por ID (si es un UUID válido)
+    if (isValidUUID(planIdentifier)) {
+      console.log(`📋 Buscando por UUID: ${planIdentifier}`);
+      const { data: plan, error: planError } = await supabase
+        .from("plans")
+        .select("id, name, price, pet_limit, duration_months, active")
+        .eq("id", planIdentifier)
+        .eq("active", true)
+        .maybeSingle();
+
+      if (planError) {
+        console.error("Error obteniendo detalles del plan por ID:", planError);
+      } else if (plan) {
+        console.log(`✅ Plan encontrado por ID: ${plan.name}`);
+        return plan;
+      }
+    }
+
+    // Si no es UUID o no se encontró por ID, buscar por nombre (case-insensitive)
+    console.log(`📋 Buscando por nombre: "${planIdentifier}"`);
     const { data: plan, error: planError } = await supabase
       .from("plans")
       .select("id, name, price, pet_limit, duration_months, active")
-      .eq("id", planId)
+      .ilike("name", `%${planIdentifier}%`)
       .eq("active", true)
       .maybeSingle();
 
     if (planError) {
-      console.error("Error obteniendo detalles del plan:", planError);
+      console.error("Error obteniendo detalles del plan por nombre:", planError);
       return null;
     }
 
-    return plan;
+    if (plan) {
+      console.log(`✅ Plan encontrado por nombre: ${plan.name}`);
+      return plan;
+    }
+
+    console.log(`❌ No se encontró ningún plan con identificador: "${planIdentifier}"`);
+    return null;
   } catch (error) {
     console.error("Error en getPlanDetails:", error);
+    return null;
+  }
+}
+
+/**
+ * Función para buscar un plan por nombre específico (busca coincidencias exactas primero, luego parciales)
+ * @param planName El nombre del plan a buscar
+ * @returns Objeto con los datos del plan o null si no existe
+ */
+export async function findPlanByName(planName: string): Promise<Plan | null> {
+  try {
+    console.log(`🔍 Buscando plan con nombre específico: "${planName}"`);
+    
+    // Normalizar el nombre de entrada
+    const normalizedPlanName = planName.toLowerCase().trim();
+    
+    // Mapeo de nombres comunes a nombres exactos en la BD
+    const planNameMapping: { [key: string]: string } = {
+      'huellita': 'Plan Huellita',
+      'plan huellita': 'Plan Huellita',
+      'huellita 1 mascota': 'Plan Huellita',
+      '1': 'Plan Huellita',
+      'doble': 'Plan Doble Huella',
+      'plan doble': 'Plan Doble Huella',
+      'doble huella': 'Plan Doble Huella',
+      'plan doble huella': 'Plan Doble Huella',
+      '2': 'Plan Doble Huella',
+      'triple': 'Plan Triple Huella',
+      'plan triple': 'Plan Triple Huella',
+      'triple huella': 'Plan Triple Huella',
+      'plan triple huella': 'Plan Triple Huella',
+      '3': 'Plan Triple Huella',
+      'gran manada': 'Plan Gran Manada Básico',
+      'plan gran manada': 'Plan Gran Manada Básico',
+      'gran manada basico': 'Plan Gran Manada Básico',
+      'plan gran manada basico': 'Plan Gran Manada Básico',
+      '4': 'Plan Gran Manada Básico',
+      'gran manada premium': 'Plan Gran Manada Premium',
+      'plan gran manada premium': 'Plan Gran Manada Premium',
+      'premium': 'Plan Gran Manada Premium',
+      '5': 'Plan Gran Manada Premium'
+    };
+
+    // Verificar si hay un mapeo directo
+    const mappedName = planNameMapping[normalizedPlanName];
+    if (mappedName) {
+      console.log(`📋 Usando mapeo: "${planName}" -> "${mappedName}"`);
+      
+      const { data: plan, error: planError } = await supabase
+        .from("plans")
+        .select("id, name, price, pet_limit, duration_months, active")
+        .ilike("name", mappedName)
+        .eq("active", true)
+        .maybeSingle();
+
+      if (planError) {
+        console.error("Error obteniendo plan por nombre mapeado:", planError);
+      } else if (plan) {
+        console.log(`✅ Plan encontrado por mapeo: ${plan.name}`);
+        return plan;
+      }
+    }
+
+    // Si no hay mapeo, buscar por coincidencia parcial
+    console.log(`📋 Buscando por coincidencia parcial: "${planName}"`);
+    const { data: plan, error: planError } = await supabase
+      .from("plans")
+      .select("id, name, price, pet_limit, duration_months, active")
+      .ilike("name", `%${normalizedPlanName}%`)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (planError) {
+      console.error("Error obteniendo plan por coincidencia parcial:", planError);
+      return null;
+    }
+
+    if (plan) {
+      console.log(`✅ Plan encontrado por coincidencia parcial: ${plan.name}`);
+      return plan;
+    }
+
+    console.log(`❌ No se encontró ningún plan con nombre: "${planName}"`);
+    return null;
+  } catch (error) {
+    console.error("Error en findPlanByName:", error);
     return null;
   }
 }

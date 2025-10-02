@@ -9,7 +9,9 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { testFunction, createPet, updateClientProfile, createLostPetAlert, getOwnerPets, getOwnerPetsOptimized, getOwnerActiveLostPets, updatePet, createFoundPetSighting, hasActiveSubscription, getAvailablePlans, validatePetLimit, 
+import { testFunction, createPet, updateClientProfile, createLostPetAlert, getOwnerPets, getOwnerPetsOptimized, getOwnerActiveLostPets, updatePet, createFoundPetSighting, hasActiveSubscription, 
+// Nuevas funciones de planes
+getPlanDetails, getAvailablePlans, validatePetLimit, findPlanByName, // Nueva función para buscar planes por nombre
 // ------
 searchLostPetsFTS, 
 // Nuevas funciones de suscripción
@@ -449,11 +451,6 @@ export const findLostPetsTool = tool((_a) => __awaiter(void 0, [_a], void 0, fun
 const validateCompleteProfileSchema = z.object({
     phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
 });
-// Esquema Zod para iniciar proceso de suscripción (actualizado)
-const initiateSubscriptionSchema = z.object({
-    phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
-    planId: z.string().min(1, "El ID del plan es obligatorio"),
-});
 // Esquema Zod para actualizar perfil completo (incluyendo neighborhood)
 const updateCompleteProfileSchema = z.object({
     phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
@@ -586,8 +583,78 @@ ${missingFieldsText}
     description: "Actualiza el perfil del usuario con todos los datos necesarios para la suscripción, incluyendo nombre, email, ciudad, país y barrio. Extensión de updateProfileTool que incluye neighborhood.",
     schema: updateCompleteProfileSchema,
 });
-export const initiateSubscriptionTool = tool((_a) => __awaiter(void 0, [_a], void 0, function* ({ phoneNumber, planId }) {
-    const result = yield initiateSubscriptionProcess(phoneNumber, planId);
+export const findPlanByNameTool = tool((_a) => __awaiter(void 0, [_a], void 0, function* ({ planName }) {
+    const plan = yield findPlanByName(planName);
+    if (!plan) {
+        const availablePlans = yield getAvailablePlans();
+        let plansList = "📋 **PLANES DISPONIBLES:**\n\n";
+        availablePlans.forEach((availablePlan, index) => {
+            const petLimitText = availablePlan.pet_limit >= 999
+                ? "mascotas ilimitadas"
+                : `${availablePlan.pet_limit} mascota${availablePlan.pet_limit > 1 ? 's' : ''}`;
+            const priceText = availablePlan.price.toLocaleString('es-CO', {
+                style: 'currency',
+                currency: 'COP',
+                minimumFractionDigits: 0
+            });
+            plansList += `${index + 1}. **${availablePlan.name}:** ${priceText}/año (${petLimitText})\n`;
+        });
+        return `❌ No se encontró el plan "${planName}". \n\n${plansList}\n\nPor favor, especifica el nombre exacto del plan que te interesa.`;
+    }
+    const petLimitText = plan.pet_limit >= 999
+        ? "mascotas ilimitadas"
+        : `${plan.pet_limit} mascota${plan.pet_limit > 1 ? 's' : ''}`;
+    const priceText = plan.price.toLocaleString('es-CO', {
+        style: 'currency',
+        currency: 'COP',
+        minimumFractionDigits: 0
+    });
+    return `✅ **Plan encontrado:**
+
+📋 **${plan.name}**
+💰 **Precio:** ${priceText}/año
+🐾 **Límite:** ${petLimitText}
+⏱️ **Duración:** ${plan.duration_months} meses
+
+**ID del plan:** ${plan.id}
+
+Para suscribirte a este plan, confirma y te daré los datos para el pago.`;
+}), {
+    name: "findPlanByNameTool",
+    description: "Busca un plan específico por nombre o identificador (acepta nombres parciales, números de plan, etc.). Útil cuando el usuario menciona un plan específico como 'huellita', 'plan 1', 'doble huella', etc.",
+    schema: z.object({
+        planName: z.string().min(1, "El nombre o identificador del plan es obligatorio"),
+    }),
+});
+export const initiateSubscriptionTool = tool((_a) => __awaiter(void 0, [_a], void 0, function* ({ phoneNumber, planIdentifier }) {
+    // Primero, intentar encontrar el plan por nombre o ID
+    let planDetails;
+    // Si parece ser un UUID, usar getPlanDetails directamente
+    if (planIdentifier.length > 20 && planIdentifier.includes('-')) {
+        planDetails = yield getPlanDetails(planIdentifier);
+    }
+    else {
+        // Si es un nombre o identificador corto, usar findPlanByName
+        planDetails = yield findPlanByName(planIdentifier);
+    }
+    if (!planDetails) {
+        const availablePlans = yield getAvailablePlans();
+        let plansList = "📋 **PLANES DISPONIBLES:**\n\n";
+        availablePlans.forEach((plan, index) => {
+            const petLimitText = plan.pet_limit >= 999
+                ? "mascotas ilimitadas"
+                : `${plan.pet_limit} mascota${plan.pet_limit > 1 ? 's' : ''}`;
+            const priceText = plan.price.toLocaleString('es-CO', {
+                style: 'currency',
+                currency: 'COP',
+                minimumFractionDigits: 0
+            });
+            plansList += `${index + 1}. **${plan.name}:** ${priceText}/año (${petLimitText})\n`;
+        });
+        return `❌ No se encontró el plan "${planIdentifier}". \n\n${plansList}\n\nPor favor, especifica el nombre exacto del plan que te interesa.`;
+    }
+    // Ahora usar el ID correcto del plan encontrado
+    const result = yield initiateSubscriptionProcess(phoneNumber, planDetails.id);
     if (!result.success) {
         return result.message;
     }
@@ -595,9 +662,14 @@ export const initiateSubscriptionTool = tool((_a) => __awaiter(void 0, [_a], voi
     let planDescription = '';
     if (planInfo) {
         const petLimitText = planInfo.pet_limit >= 999
-            ? 'mascotas ilimitadas'
-            : `${planInfo.pet_limit} ${planInfo.pet_limit === 1 ? 'mascota' : 'mascotas'}`;
-        planDescription = `del ${planInfo.name} (${petLimitText})`;
+            ? "mascotas ilimitadas"
+            : `${planInfo.pet_limit} mascota${planInfo.pet_limit > 1 ? 's' : ''}`;
+        const priceText = planInfo.price.toLocaleString('es-CO', {
+            style: 'currency',
+            currency: 'COP',
+            minimumFractionDigits: 0
+        });
+        planDescription = `**${planInfo.name}** (${priceText}/año - ${petLimitText})`;
     }
     return `🎉 ¡Excelente! Tu perfil está completo y puedes proceder con la suscripción ${planDescription}.
 
@@ -619,8 +691,11 @@ export const initiateSubscriptionTool = tool((_a) => __awaiter(void 0, [_a], voi
 ⚠️ **Importante:** El comprobante de pago es obligatorio para activar tu suscripción.`;
 }), {
     name: "initiateSubscriptionTool",
-    description: "Inicia el proceso de suscripción para un plan específico mostrando la información bancaria para el pago. Requiere que el usuario haya seleccionado un plan y que su perfil esté completo.",
-    schema: initiateSubscriptionSchema,
+    description: "Inicia el proceso de suscripción para un plan específico mostrando la información bancaria para el pago. Acepta tanto IDs de plan como nombres (ej: 'huellita', 'plan 1', 'doble huella', etc.). El sistema automáticamente encontrará el plan correcto.",
+    schema: z.object({
+        phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+        planIdentifier: z.string().min(1, "El identificador del plan (nombre o ID) es obligatorio"),
+    }),
 });
 export const processPaymentProofTool = tool((_a) => __awaiter(void 0, [_a], void 0, function* ({ phoneNumber, proofImageUrl }) {
     const result = yield processPaymentProof(phoneNumber, proofImageUrl);
