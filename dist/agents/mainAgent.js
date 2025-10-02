@@ -1,42 +1,64 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.appWithMemory = void 0;
-const dotenv_1 = __importDefault(require("dotenv"));
-const openai_1 = require("@langchain/openai");
-const prebuilt_1 = require("@langchain/langgraph/prebuilt");
-const messages_1 = require("@langchain/core/messages");
-const langgraph_1 = require("@langchain/langgraph");
-const tools_1 = require("../tools/tools");
-const constants_1 = require("../config/constants");
-dotenv_1.default.config();
-const memory = new langgraph_1.MemorySaver();
-const llm = new openai_1.ChatOpenAI({
-    temperature: 0,
-    model: "gpt-4o",
+import dotenv from "dotenv";
+import { ChatOpenAI } from "@langchain/openai";
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import { HumanMessage, SystemMessage, } from "@langchain/core/messages";
+import { MemorySaver } from "@langchain/langgraph";
+import { createPetTool, updateProfileTool, createLostPetAlertTool, getOwnerPetsOptimizedTool, updatePetTool, createFoundPetSightingTool, findLostPetsTool, checkSubscriptionStatusTool, 
+// Nuevas herramientas de suscripción
+validateCompleteProfileTool, updateCompleteProfileTool, initiateSubscriptionTool, processPaymentProofTool, 
+// Nuevas herramientas de planes
+showAvailablePlansTool, validateCurrentPetLimitTool, } from "../tools/tools";
+import { MESSAGES } from "../config/constants";
+dotenv.config();
+const memory = new MemorySaver();
+const llm = new ChatOpenAI({
+    temperature: 0.4,
+    model: "gpt-4.1",
     apiKey: process.env.OPENAI_API_KEY,
-    maxTokens: 260,
+    maxTokens: 360,
 });
 const tools = [
-    tools_1.retrieverTool,
-    tools_1.saveClientDataTool,
-    tools_1.contactTool,
-    tools_1.setAvailableForAudioTool,
-    tools_1.validateCityTool,
-    tools_1.updateNotificationsTool,
-    tools_1.jobOpportunitiesTool,
+    checkSubscriptionStatusTool, // CRÍTICO: Siempre verificar suscripción primero
+    // Herramientas de suscripción
+    validateCompleteProfileTool, // Validar si perfil está completo para suscripción
+    updateCompleteProfileTool, // Actualizar perfil incluyendo neighborhood
+    initiateSubscriptionTool, // Mostrar información de pago
+    processPaymentProofTool, // Procesar comprobante de pago
+    // Nuevas herramientas de planes
+    showAvailablePlansTool, // Mostrar planes disponibles
+    validateCurrentPetLimitTool, // Verificar límites de mascotas
+    // Herramientas de mascotas
+    createPetTool,
+    updatePetTool,
+    updateProfileTool, // Mantener para casos básicos
+    getOwnerPetsOptimizedTool,
+    createLostPetAlertTool,
+    findLostPetsTool, // Nueva herramienta avanzada
+    createFoundPetSightingTool, // Herramienta UNIFICADA para avistamientos y matches
 ];
-const modifyMessages = (messages) => {
+const createModifyMessages = (phoneNumber) => (messages) => {
     return [
-        new messages_1.SystemMessage(constants_1.MESSAGES.SYSTEM_PROMPT),
+        new SystemMessage(MESSAGES.SYSTEM_PROMPT),
+        new HumanMessage(`Este es el número de teléfono del usuario: ${phoneNumber}`),
         ...messages,
     ];
 };
-exports.appWithMemory = (0, prebuilt_1.createReactAgent)({
+// Función para crear agente con número específico
+export const createAgentWithPhone = (phoneNumber) => {
+    return createReactAgent({
+        llm,
+        tools,
+        messageModifier: createModifyMessages(phoneNumber),
+        checkpointSaver: memory,
+    });
+};
+// Mantener compatibilidad hacia atrás (deprecado)
+export const appWithMemory = createReactAgent({
     llm,
     tools,
-    messageModifier: modifyMessages,
+    messageModifier: (messages) => [
+        new SystemMessage(MESSAGES.SYSTEM_PROMPT),
+        ...messages,
+    ],
     checkpointSaver: memory,
 });
