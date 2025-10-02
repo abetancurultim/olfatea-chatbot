@@ -20,6 +20,7 @@ import { ElevenLabsClient } from "elevenlabs";
 import { getAvailableForAudio } from "../utils/getAvailableForAudio";
 import { getAvailableChatOn } from "../utils/getAvailableChatOn";
 import { supabase } from "../utils/saveChatHistory";
+import { sendWelcomeEmail } from "../utils/functions";
 import axios from "axios";
 
 // Interfaces para tipos de Twilio
@@ -75,7 +76,7 @@ const router = express.Router();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const statusCallbackUrl = `https://f7e50d1d5443.ngrok-free.app`;
+const statusCallbackUrl = `https://ultim.online`;
 
 const MessagingResponse = twilio.twiml.MessagingResponse; // mandar un texto simple
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -151,15 +152,6 @@ const fetchMediaWithRetry = async (
 };
 
 // Función para generar delay aleatorio
-const getRandomDelay = (min: number, max: number): number => {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-};
-
-// Función de delay
-const delay = (ms: number): Promise<void> => {
-  return new Promise(resolve => setTimeout(resolve, ms));
-};
-
 // Función para detectar origen de campaña (placeholder)
 const getCampaignOrigin = (body: any): string => {
   // Aquí puedes implementar lógica para detectar de dónde viene el mensaje
@@ -184,7 +176,7 @@ router.post("/olfatea/receive-message", async (req, res) => {
   // Lista de números de Twilio para detectar mensajes salientes
   const twilioNumbers = [
     "+14155238886", // Número de pruebas
-    "+5742044644", // Número de producción - Cambia por tus números
+    "+573052227183", // Número de producción - Cambia por tus números
   ];
 
   // Detectar mensajes salientes para evitar duplicación
@@ -1266,10 +1258,6 @@ router.post("/olfatea/receive-message", async (req, res) => {
           async () => {
             const audioUrl = await getDownloadURL(uploadTask.snapshot.ref);
 
-            const randomDelay = getRandomDelay(15000, 25000); // Espera entre 15 y 25 segundos
-            console.log(`⏳ Delaying audio response by ${randomDelay / 1000} seconds...`);
-            await delay(randomDelay);
-
             console.log("🎵 === SENDING AUDIO MESSAGE ===");
             console.log("Audio FROM:", to, "TO:", from);
             console.log("================================");
@@ -1310,10 +1298,6 @@ router.post("/olfatea/receive-message", async (req, res) => {
 
         for (let part of messageParts) {
           if (part !== "") {
-            const randomDelay = getRandomDelay(15000, 25000); // Espera entre 15 y 25 segundos
-            console.log(`⏳ Delaying text response by ${randomDelay / 1000} seconds...`);
-            await delay(randomDelay);
-
             console.log("💬 === SENDING TEXT MESSAGE ===");
             console.log("Text FROM:", to, "TO:", from);
             console.log("Message part:", part.substring(0, 50) + "...");
@@ -1340,10 +1324,6 @@ router.post("/olfatea/receive-message", async (req, res) => {
         }
       } else {
         try {
-          const randomDelay = getRandomDelay(15000, 25000); // Espera entre 15 y 25 segundos
-          console.log(`⏳ Delaying text response by ${randomDelay / 1000} seconds...`);
-          await delay(randomDelay);
-
           console.log("💬 === SENDING SINGLE TEXT MESSAGE ===");
           console.log("Text FROM:", to, "TO:", from);
           console.log("Message:", responseMessage.substring(0, 100) + "...");
@@ -1433,7 +1413,7 @@ router.post("/olfatea/send-template", async (req, res) => {
 
   try {
     const message = await client.messages.create({
-      // from: "whatsapp:+5742044644",
+      // from: "whatsapp:+573052227183",
       // from: `whatsapp:+14155238886`,
       from: `whatsapp:${twilioPhoneNumber}`,
       to: `whatsapp:${to}`,
@@ -1449,7 +1429,7 @@ router.post("/olfatea/send-template", async (req, res) => {
     // Traer el mensaje de la plantilla desde el endpoint /message/:sid con axios
     const response = await axios.get(
       // `https://ultim.online/olfatea/message/${message.sid}`
-      `https://72b80a218134.ngrok-free.app/olfatea/message/${message.sid}`
+      `https://ultim.online/olfatea/message/${message.sid}`
     );
 
     console.log("response", response.data.message.body);
@@ -1495,6 +1475,158 @@ router.get("/olfatea/message/:sid", async (req, res) => {
       message: "Error al obtener el mensaje",
       error:
         error instanceof Error ? error.message : "An unknown error occurred",
+    });
+  }
+});
+
+// Endpoint para enviar alerta masiva de mascota perdida a usuarios de la misma ciudad
+router.post("/olfatea/send-lost-pet-alert", async (req, res) => {
+  const { petId, alertId, twilioPhoneNumber } = req.body;
+
+  try {
+    console.log("🚨 === ENDPOINT: SEND LOST PET ALERT ===");
+    console.log("Pet ID:", petId);
+    console.log("Alert ID:", alertId);
+
+    // Validar parámetros requeridos
+    if (!petId || !alertId) {
+      return res.status(400).json({
+        success: false,
+        message: "Se requieren petId y alertId"
+      });
+    }
+
+    if (!twilioPhoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "Se requiere twilioPhoneNumber"
+      });
+    }
+
+    // Obtener información de la mascota y la alerta
+    const { data: petData, error: petError } = await supabase
+      .from("pets")
+      .select(`
+        id,
+        name,
+        species,
+        breed,
+        color,
+        gender,
+        birth_date,
+        distinguishing_marks,
+        owner_id
+      `)
+      .eq("id", petId)
+      .single();
+
+    if (petError || !petData) {
+      console.error("Error obteniendo datos de mascota:", petError);
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró la mascota especificada"
+      });
+    }
+
+    // Obtener información del dueño
+    const { data: ownerData, error: ownerError } = await supabase
+      .from("profiles")
+      .select("id, phone_number, full_name, city")
+      .eq("id", petData.owner_id)
+      .single();
+
+    if (ownerError || !ownerData) {
+      console.error("Error obteniendo datos del dueño:", ownerError);
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró el dueño de la mascota"
+      });
+    }
+
+    if (!ownerData.city) {
+      return res.status(400).json({
+        success: false,
+        message: "El dueño no tiene ciudad registrada. No se pueden enviar alertas."
+      });
+    }
+
+    // Obtener información de la alerta
+    const { data: alertData, error: alertError } = await supabase
+      .from("lost_pet_alerts")
+      .select("id, last_seen_at, last_seen_description, additional_info")
+      .eq("id", alertId)
+      .eq("pet_id", petId)
+      .single();
+
+    if (alertError || !alertData) {
+      console.error("Error obteniendo datos de alerta:", alertError);
+      return res.status(404).json({
+        success: false,
+        message: "No se encontró la alerta especificada"
+      });
+    }
+
+    // Calcular edad de la mascota
+    let age = "Edad no especificada";
+    if (petData.birth_date) {
+      const birthDate = new Date(petData.birth_date);
+      const today = new Date();
+      const years = today.getFullYear() - birthDate.getFullYear();
+      const months = today.getMonth() - birthDate.getMonth();
+      
+      if (years > 0) {
+        age = `${years} año${years > 1 ? 's' : ''}`;
+      } else if (months > 0) {
+        age = `${months} mes${months > 1 ? 'es' : ''}`;
+      } else {
+        age = "Menos de 1 mes";
+      }
+    }
+
+    // Preparar información de la alerta
+    const alertInfo = {
+      petName: petData.name,
+      species: petData.species || "No especificada",
+      breed: petData.breed || "No especificada",
+      gender: petData.gender || "No especificado",
+      age: age,
+      distinguishingMarks: petData.distinguishing_marks || "No especificadas",
+      lastSeenLocation: alertData.last_seen_description || 
+                        alertData.additional_info || 
+                        "Ubicación no especificada"
+    };
+
+    console.log("📋 Información de alerta preparada:", alertInfo);
+
+    // Importar la función de envío masivo
+    const { sendLostPetAlertToCity } = await import("../utils/functions.js");
+
+    // Enviar alertas masivas
+    const result = await sendLostPetAlertToCity(
+      alertInfo,
+      ownerData.city,
+      ownerData.phone_number,
+      twilioPhoneNumber
+    );
+
+    // Responder con el resultado
+    res.status(result.success ? 200 : 500).json({
+      success: result.success,
+      message: result.message,
+      stats: {
+        totalRecipients: result.totalRecipients,
+        successfulSends: result.successfulSends,
+        failedSends: result.failedSends
+      },
+      sentMessages: result.sentMessages
+    });
+
+  } catch (error) {
+    console.error("❌ Error crítico en endpoint send-lost-pet-alert:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error interno al procesar la solicitud",
+      error: error instanceof Error ? error.message : "Error desconocido"
     });
   }
 });
@@ -1675,6 +1807,66 @@ router.get("/olfatea/message-status/:sid", async (req, res) => {
       mensajeError = error.message;
     }
     res.status(500).json({ error: mensajeError });
+  }
+});
+
+// Endpoint para enviar email de bienvenida al cliente
+router.post("/olfatea/send-welcome-email", async (req, res) => {
+  try {
+    const { phoneNumber, fullName, email, city, country, neighborhood } = req.body;
+
+    // Validaciones básicas
+    if (!phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "El número de teléfono es requerido"
+      });
+    }
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "El email es requerido para enviar la bienvenida"
+      });
+    }
+
+    console.log(`📧 Procesando solicitud de email de bienvenida para: ${phoneNumber}`);
+
+    // Preparar datos del perfil para el email
+    const profileData = {
+      phone_number: phoneNumber,
+      full_name: fullName || 'Querido usuario',
+      email: email,
+      city: city || 'No especificado',
+      country: country || 'No especificado',
+      neighborhood: neighborhood || 'No especificado'
+    };
+
+    // Enviar el email de bienvenida
+    await sendWelcomeEmail(profileData);
+
+    console.log(`✅ Email de bienvenida enviado exitosamente a ${email}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Email de bienvenida enviado exitosamente a ${email}`,
+      recipient: email,
+      sentAt: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error("❌ Error en endpoint de email de bienvenida:", error);
+    
+    let errorMessage = "Error desconocido";
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Error al enviar el email de bienvenida",
+      error: errorMessage
+    });
   }
 });
 

@@ -21,6 +21,9 @@ import {
   updateCompleteProfileTool,
   initiateSubscriptionTool,
   processPaymentProofTool,
+  // Nuevas herramientas de planes
+  showAvailablePlansTool,
+  validateCurrentPetLimitTool,
 } from "../tools/tools";
 import { MESSAGES } from "../config/constants";
 
@@ -42,6 +45,9 @@ const tools = [
   updateCompleteProfileTool, // Actualizar perfil incluyendo neighborhood
   initiateSubscriptionTool, // Mostrar información de pago
   processPaymentProofTool, // Procesar comprobante de pago
+  // Nuevas herramientas de planes
+  showAvailablePlansTool, // Mostrar planes disponibles
+  validateCurrentPetLimitTool, // Verificar límites de mascotas
   // Herramientas de mascotas
   createPetTool,
   updatePetTool,

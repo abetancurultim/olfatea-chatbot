@@ -12,6 +12,10 @@ import {
   createFoundPetSighting,
   sendPetSightingNotification,
   hasActiveSubscription,
+  // Nuevas funciones de planes
+  getPlanDetails,
+  getAvailablePlans,
+  validatePetLimit,
   // ------
   searchLostPetsFTS,
   // Nuevas funciones de suscripción
@@ -96,7 +100,23 @@ export const checkSubscriptionStatusTool = tool(
     const subscriptionStatus = await hasActiveSubscription(phoneNumber);
     
     if (subscriptionStatus.active) {
-      return `✅ SUSCRIPCIÓN ACTIVA: ${subscriptionStatus.reason}. El usuario PUEDE registrar mascotas.`;
+      // Obtener información de límites de mascotas
+      const petLimitInfo = await validatePetLimit(phoneNumber);
+      
+      let planMessage = "";
+      if (subscriptionStatus.plan) {
+        planMessage = `\n📋 PLAN: ${subscriptionStatus.plan.name} (${subscriptionStatus.plan.price.toLocaleString('es-CO', { style: 'currency', currency: 'COP' })})`;
+        planMessage += `\n🐾 MASCOTAS: ${petLimitInfo.currentPetCount}/${subscriptionStatus.plan.pet_limit} registradas`;
+        
+        if (petLimitInfo.canRegister) {
+          const remaining = subscriptionStatus.plan.pet_limit - petLimitInfo.currentPetCount;
+          planMessage += `\n✅ Puede registrar ${remaining} mascota(s) más`;
+        } else {
+          planMessage += `\n⚠️ Ha alcanzado el límite de su plan`;
+        }
+      }
+      
+      return `✅ SUSCRIPCIÓN ACTIVA: ${subscriptionStatus.reason}${planMessage}\n\n✅ El usuario PUEDE gestionar sus mascotas.`;
     } else {
       // Determinar el mensaje específico según el estado
       let message = "";
@@ -110,10 +130,10 @@ export const checkSubscriptionStatusTool = tool(
         case 'none':
           if (subscriptionStatus.reason?.includes('no encontrado')) {
             message = `❌ PERFIL NO ENCONTRADO: ${subscriptionStatus.reason}`;
-            actionRequired = "Debe registrarse y adquirir un plan de suscripción de $26.000 anuales.";
+            actionRequired = "Debe registrarse y adquirir un plan de suscripción.";
           } else {
             message = `❌ SIN SUSCRIPCIÓN: ${subscriptionStatus.reason}`;
-            actionRequired = "Debe adquirir un plan de suscripción de $26.000 anuales para registrar mascotas.";
+            actionRequired = "Debe adquirir un plan de suscripción para registrar mascotas.";
           }
           break;
         default:
@@ -121,12 +141,12 @@ export const checkSubscriptionStatusTool = tool(
           actionRequired = "Contacte soporte para resolver el problema con su suscripción.";
       }
       
-      return `${message}\n\n🚫 NO PUEDE REGISTRAR MASCOTAS.\n📞 ${actionRequired}\n\n💡 Una vez que tenga suscripción activa, podrá registrar todas las mascotas que desee.`;
+      return `${message}\n\n🚫 NO PUEDE REGISTRAR MASCOTAS.\n📞 ${actionRequired}\n\n💡 Una vez que tenga suscripción activa, podrá registrar mascotas según el plan que elija.`;
     }
   },
   {
     name: "checkSubscriptionStatusTool",
-    description: "HERRAMIENTA CRÍTICA: Verifica si un usuario tiene suscripción activa ANTES de iniciar cualquier registro de mascota. DEBE usarse SIEMPRE antes de crear o modificar mascotas para evitar desperdiciar el tiempo del usuario recopilando información si no puede proceder.",
+    description: "HERRAMIENTA CRÍTICA: Verifica si un usuario tiene suscripción activa y muestra información detallada del plan (límites de mascotas, mascotas registradas). DEBE usarse SIEMPRE antes de crear o modificar mascotas para evitar desperdiciar el tiempo del usuario.",
     schema: z.object({
       phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
     }),
@@ -596,9 +616,10 @@ const validateCompleteProfileSchema = z.object({
   phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
 });
 
-// Esquema Zod para iniciar proceso de suscripción
+// Esquema Zod para iniciar proceso de suscripción (actualizado)
 const initiateSubscriptionSchema = z.object({
   phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+  planId: z.string().min(1, "El ID del plan es obligatorio"),
 });
 
 // Esquema Zod para actualizar perfil completo (incluyendo neighborhood)
@@ -765,14 +786,23 @@ ${missingFieldsText}
 );
 
 export const initiateSubscriptionTool = tool(
-  async ({ phoneNumber }) => {
-    const result = await initiateSubscriptionProcess(phoneNumber);
+  async ({ phoneNumber, planId }) => {
+    const result = await initiateSubscriptionProcess(phoneNumber, planId);
 
     if (!result.success) {
       return result.message;
     }
 
-    return `🎉 ¡Excelente! Tu perfil está completo y puedes proceder con la suscripción.
+    const planInfo = result.planSelected;
+    let planDescription = '';
+    if (planInfo) {
+      const petLimitText = planInfo.pet_limit >= 999 
+        ? 'mascotas ilimitadas' 
+        : `${planInfo.pet_limit} ${planInfo.pet_limit === 1 ? 'mascota' : 'mascotas'}`;
+      planDescription = `del ${planInfo.name} (${petLimitText})`;
+    }
+
+    return `🎉 ¡Excelente! Tu perfil está completo y puedes proceder con la suscripción ${planDescription}.
 
 💳 **Información para el Pago:**
 🏦 **Banco:** ${result.bankInfo.bank}
@@ -784,7 +814,7 @@ export const initiateSubscriptionTool = tool(
 📝 **Concepto:** ${result.bankInfo.concept}
 
 📋 **Instrucciones:**
-1. Realiza la transferencia por el valor exacto de $26,000 COP
+1. Realiza la transferencia por el valor exacto de ${result.bankInfo.amount}
 2. Una vez hayas hecho el pago, **envíame una foto del comprobante de transferencia**
 3. Notificaré al equipo administrativo para validar tu pago
 4. En 24-48 horas hábiles recibirás la confirmación de activación
@@ -793,7 +823,7 @@ export const initiateSubscriptionTool = tool(
   },
   {
     name: "initiateSubscriptionTool", 
-    description: "Inicia el proceso de suscripción mostrando la información bancaria para el pago. Solo usar después de validar que el perfil está completo.",
+    description: "Inicia el proceso de suscripción para un plan específico mostrando la información bancaria para el pago. Requiere que el usuario haya seleccionado un plan y que su perfil esté completo.",
     schema: initiateSubscriptionSchema,
   }
 );
@@ -821,5 +851,86 @@ export const processPaymentProofTool = tool(
     name: "processPaymentProofTool",
     description: "Procesa el comprobante de pago enviado por el usuario y notifica al admin para validación. Usar solo cuando el usuario envíe la imagen del comprobante.",
     schema: processPaymentProofSchema,
+  }
+);
+
+//! ================== NUEVAS HERRAMIENTAS DE PLANES ==================
+
+export const showAvailablePlansTool = tool(
+  async () => {
+    const plans = await getAvailablePlans();
+    
+    if (plans.length === 0) {
+      return "❌ No se pudieron obtener los planes disponibles. Contacte soporte.";
+    }
+    
+    let plansMessage = "📋 **PLANES DISPONIBLES DE OLFATEA:**\n\n";
+    
+    plans.forEach((plan, index) => {
+      const formattedPrice = plan.price.toLocaleString('es-CO', { 
+        style: 'currency', 
+        currency: 'COP',
+        minimumFractionDigits: 0 
+      });
+      
+      // Manejar caso especial de plan ilimitado (999 = ilimitadas)
+      const petLimitText = plan.pet_limit >= 999 
+        ? "Ilimitadas mascotas" 
+        : `Hasta ${plan.pet_limit} ${plan.pet_limit === 1 ? 'mascota' : 'mascotas'}`;
+      
+      plansMessage += `**${index + 1}. ${plan.name}**\n`;
+      plansMessage += `💰 Precio: ${formattedPrice} anuales\n`;
+      plansMessage += `🐾 Mascotas: ${petLimitText}\n`;
+      plansMessage += `⏱️ Duración: ${plan.duration_months} meses\n\n`;
+    });
+    
+    plansMessage += "💡 Todos los planes incluyen:\n";
+    plansMessage += "• Registro completo de mascotas\n";
+    plansMessage += "• Alertas de búsqueda por pérdida\n";
+    plansMessage += "• Red de usuarios colaboradores\n";
+    plansMessage += "• Notificaciones de avistamientos\n\n";
+    plansMessage += "Para suscribirte, dime qué plan te interesa y te ayudo con el proceso.";
+    
+    return plansMessage;
+  },
+  {
+    name: "showAvailablePlansTool",
+    description: "Muestra todos los planes de suscripción disponibles con precios, límites de mascotas y características. Usar cuando el usuario pregunte por planes o durante el proceso de suscripción.",
+    schema: z.object({}),
+  }
+);
+
+export const validateCurrentPetLimitTool = tool(
+  async ({ phoneNumber }) => {
+    const validation = await validatePetLimit(phoneNumber);
+    
+    if (!validation.canRegister && validation.planName === "Sin suscripción") {
+      return `❌ No tienes suscripción activa. Necesitas suscribirte a un plan para registrar mascotas.`;
+    }
+    
+    if (!validation.canRegister && validation.planName === "Plan no válido") {
+      return `❌ Tu plan de suscripción no es válido. Contacta soporte para resolver este problema.`;
+    }
+    
+    if (validation.canRegister) {
+      // Manejar caso especial de plan ilimitado (999 = ilimitadas)
+      const isUnlimited = validation.planLimit >= 999;
+      
+      if (isUnlimited) {
+        return `✅ **${validation.planName}**: Tienes ${validation.currentPetCount} mascotas registradas. Tu plan permite mascotas ilimitadas, así que puedes registrar todas las que quieras.`;
+      } else {
+        const remaining = validation.planLimit - validation.currentPetCount;
+        return `✅ **${validation.planName}**: Tienes ${validation.currentPetCount}/${validation.planLimit} mascotas registradas. Puedes registrar ${remaining} mascota(s) más.`;
+      }
+    } else {
+      return `⚠️ **${validation.planName}**: Has alcanzado el límite de ${validation.planLimit} mascotas. Tienes ${validation.currentPetCount} mascotas registradas. Debes esperar a que termine tu suscripción actual para cambiar a un plan con más mascotas.`;
+    }
+  },
+  {
+    name: "validateCurrentPetLimitTool",
+    description: "Verifica rápidamente si un usuario puede registrar más mascotas sin intentar el registro completo. Muestra información clara del plan actual y límites.",
+    schema: z.object({
+      phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+    }),
   }
 );

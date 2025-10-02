@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
+import twilio from "twilio";
 // Import colombia.json file
 
 dotenv.config();
@@ -59,6 +60,146 @@ export const testFunction = async () => {
   return "Hola, este es un mensaje de prueba";
 };
 
+/**
+ * Función para obtener los detalles de un plan específico
+ * @param planId El ID del plan a consultar
+ * @returns Objeto con los datos del plan o null si no existe
+ */
+export async function getPlanDetails(planId: string): Promise<Plan | null> {
+  try {
+    const { data: plan, error: planError } = await supabase
+      .from("plans")
+      .select("id, name, price, pet_limit, duration_months, active")
+      .eq("id", planId)
+      .eq("active", true)
+      .maybeSingle();
+
+    if (planError) {
+      console.error("Error obteniendo detalles del plan:", planError);
+      return null;
+    }
+
+    return plan;
+  } catch (error) {
+    console.error("Error en getPlanDetails:", error);
+    return null;
+  }
+}
+
+/**
+ * Función para obtener todos los planes disponibles
+ * @returns Array con todos los planes activos ordenados por precio
+ */
+export async function getAvailablePlans(): Promise<Plan[]> {
+  try {
+    const { data: plans, error: plansError } = await supabase
+      .from("plans")
+      .select("id, name, price, pet_limit, duration_months, active")
+      .eq("active", true)
+      .order("price", { ascending: true });
+
+    if (plansError) {
+      console.error("Error obteniendo planes disponibles:", plansError);
+      return [];
+    }
+
+    return plans || [];
+  } catch (error) {
+    console.error("Error en getAvailablePlans:", error);
+    return [];
+  }
+}
+
+/**
+ * Función para validar si un usuario puede registrar una nueva mascota según su plan
+ * @param phoneNumber El número de teléfono del usuario
+ * @returns Objeto con resultado de la validación
+ */
+export async function validatePetLimit(phoneNumber: string): Promise<PetLimitValidationResult> {
+  try {
+    // Obtener información de suscripción del usuario
+    const subscriptionStatus = await hasActiveSubscription(phoneNumber);
+    
+    if (!subscriptionStatus.active || !subscriptionStatus.profile) {
+      return {
+        canRegister: false,
+        currentPetCount: 0,
+        planLimit: 0,
+        planName: "Sin suscripción",
+        reason: "No tiene suscripción activa"
+      };
+    }
+
+    // Obtener información del plan
+    let planInfo: Plan | null = null;
+    if (subscriptionStatus.profile.plan_id) {
+      planInfo = await getPlanDetails(subscriptionStatus.profile.plan_id);
+    }
+
+    // Si no tiene plan asignado o el plan no existe, usar límite por defecto (manejo de casos legacy)
+    if (!planInfo) {
+      return {
+        canRegister: false,
+        currentPetCount: 0,
+        planLimit: 0,
+        planName: "Plan no válido",
+        reason: "El plan de suscripción no es válido o no existe"
+      };
+    }
+
+    // Contar mascotas actuales del usuario
+    const { data: pets, error: petsError } = await supabase
+      .from("pets")
+      .select("id")
+      .eq("owner_id", subscriptionStatus.profile.id);
+
+    if (petsError) {
+      console.error("Error contando mascotas:", petsError);
+      return {
+        canRegister: false,
+        currentPetCount: 0,
+        planLimit: planInfo.pet_limit,
+        planName: planInfo.name,
+        reason: "Error consultando mascotas registradas"
+      };
+    }
+
+    const currentPetCount = pets?.length || 0;
+    const canRegister = currentPetCount < planInfo.pet_limit;
+
+    // Manejar caso especial de Plan Gran Manada Premium (999 = ilimitado)
+    const isUnlimited = planInfo.pet_limit >= 999;
+    const displayLimit = isUnlimited ? "ilimitadas" : planInfo.pet_limit.toString();
+    
+    let reason: string;
+    if (isUnlimited) {
+      reason = `Plan ${planInfo.name} permite mascotas ilimitadas. Actualmente tienes ${currentPetCount} registradas.`;
+    } else if (canRegister) {
+      reason = `Puede registrar ${planInfo.pet_limit - currentPetCount} mascota(s) más`;
+    } else {
+      reason = `Ha alcanzado el límite de ${planInfo.pet_limit} mascota(s) de su ${planInfo.name}. Debe esperar a que termine su suscripción para cambiar de plan.`;
+    }
+
+    return {
+      canRegister: isUnlimited ? true : canRegister,
+      currentPetCount,
+      planLimit: planInfo.pet_limit,
+      planName: planInfo.name,
+      reason
+    };
+
+  } catch (error) {
+    console.error("Error en validatePetLimit:", error);
+    return {
+      canRegister: false,
+      currentPetCount: 0,
+      planLimit: 0,
+      planName: "Error",
+      reason: "Error interno al validar límites"
+    };
+  }
+}
+
 // Interfaz para datos de mascota
 interface PetData {
   name: string;
@@ -104,7 +245,26 @@ interface PetSightingResult {
   };
 }
 
-// Interfaz para el estado de suscripción
+// Interfaz para un plan de suscripción
+interface Plan {
+  id: string;
+  name: string;
+  price: number;
+  pet_limit: number;
+  duration_months: number;
+  active: boolean;
+}
+
+// Interfaz para el resultado de validación de límite de mascotas
+interface PetLimitValidationResult {
+  canRegister: boolean;
+  currentPetCount: number;
+  planLimit: number;
+  planName: string;
+  reason?: string;
+}
+
+// Interfaz para el estado de suscripción (actualizada)
 interface SubscriptionStatus {
   active: boolean;
   status: 'active' | 'expired' | 'none';
@@ -114,18 +274,30 @@ interface SubscriptionStatus {
     is_subscriber: boolean;
     subscription_activated_at: string | null;
     subscription_expires_at: string | null;
+    plan_id: string | null;
   } | null;
   expiresAt?: string;
+  plan?: {
+    id: string;
+    name: string;
+    price: number;
+    pet_limit: number;
+  } | null;
 }
 
-// Interfaz para la respuesta estructurada de createPet
+// Interfaz para la respuesta estructurada de createPet (actualizada)
 interface CreatePetResult {
   success: boolean;
   petId?: string;
   error?: {
-    code: 'SUBSCRIPTION_REQUIRED' | 'SUBSCRIPTION_EXPIRED' | 'SUBSCRIPTION_INVALID' | 'VALIDATION_ERROR' | 'DATABASE_ERROR';
+    code: 'SUBSCRIPTION_REQUIRED' | 'SUBSCRIPTION_EXPIRED' | 'SUBSCRIPTION_INVALID' | 'PET_LIMIT_EXCEEDED' | 'VALIDATION_ERROR' | 'DATABASE_ERROR';
     message: string;
     status?: string;
+    planInfo?: {
+      currentCount: number;
+      limit: number;
+      planName: string;
+    };
   };
 }
 
@@ -139,7 +311,7 @@ export async function hasActiveSubscription(phoneNumber: string): Promise<Subscr
     // Consultar perfil del usuario
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("id, is_subscriber, subscription_activated_at, subscription_expires_at")
+      .select("id, is_subscriber, subscription_activated_at, subscription_expires_at, plan_id")
       .eq("phone_number", phoneNumber)
       .maybeSingle();
 
@@ -186,13 +358,28 @@ export async function hasActiveSubscription(phoneNumber: string): Promise<Subscr
     const now = new Date();
     const expiresAt = new Date(profile.subscription_expires_at);
 
+    // Obtener información del plan si existe
+    let planInfo = null;
+    if (profile.plan_id) {
+      const planDetails = await getPlanDetails(profile.plan_id);
+      if (planDetails) {
+        planInfo = {
+          id: planDetails.id,
+          name: planDetails.name,
+          price: planDetails.price,
+          pet_limit: planDetails.pet_limit
+        };
+      }
+    }
+
     if (now >= expiresAt) {
       return {
         active: false,
         status: 'expired',
         reason: `Suscripción expiró el ${expiresAt.toLocaleDateString('es-CO')} - renueve para continuar`,
         profile: profile,
-        expiresAt: profile.subscription_expires_at
+        expiresAt: profile.subscription_expires_at,
+        plan: planInfo
       };
     }
 
@@ -202,7 +389,8 @@ export async function hasActiveSubscription(phoneNumber: string): Promise<Subscr
       status: 'active',
       reason: `Suscripción activa hasta ${expiresAt.toLocaleDateString('es-CO')}`,
       profile: profile,
-      expiresAt: profile.subscription_expires_at
+      expiresAt: profile.subscription_expires_at,
+      plan: planInfo
     };
 
   } catch (error) {
@@ -261,6 +449,27 @@ export async function createPet(
     }
 
     console.log(`✅ Suscripción activa verificada para ${clientNumber}`);
+
+    // --- VALIDACIÓN DE LÍMITE DE MASCOTAS ---
+    console.log(`🔢 Validando límite de mascotas para ${clientNumber}...`);
+    const petLimitCheck = await validatePetLimit(clientNumber);
+    
+    if (!petLimitCheck.canRegister) {
+      return {
+        success: false,
+        error: {
+          code: 'PET_LIMIT_EXCEEDED',
+          message: petLimitCheck.reason || 'Ha alcanzado el límite de mascotas de su plan',
+          planInfo: {
+            currentCount: petLimitCheck.currentPetCount,
+            limit: petLimitCheck.planLimit,
+            planName: petLimitCheck.planName
+          }
+        }
+      };
+    }
+
+    console.log(`✅ Límite de mascotas validado: ${petLimitCheck.currentPetCount}/${petLimitCheck.planLimit} (${petLimitCheck.planName})`);
 
     // --- BUSCAR O CREAR PERFIL ---
     let profileId: string;
@@ -833,6 +1042,74 @@ export async function createLostPetAlert(
       `Alerta de mascota perdida creada con ID: ${newAlert.id} para la mascota: ${targetPet.name}`
     );
 
+    // 🚨 ENVÍO AUTOMÁTICO DE ALERTAS A LA CIUDAD
+    try {
+      console.log("🔔 Iniciando envío automático de alertas a la ciudad...");
+      
+      // Obtener información completa del dueño para enviar alertas
+      const { data: ownerProfile, error: ownerError } = await supabase
+        .from("profiles")
+        .select("id, phone_number, full_name, city")
+        .eq("phone_number", phoneNumber)
+        .single();
+
+      if (ownerError || !ownerProfile || !ownerProfile.city) {
+        console.error("⚠️  No se pudo enviar alertas: Información del dueño incompleta");
+        console.error("Detalles:", ownerError || "Ciudad no registrada");
+        // No fallar la creación de alerta si el envío falla
+      } else {
+        // Calcular edad de la mascota
+        let age = "Edad no especificada";
+        if (targetPet.birth_date) {
+          const birthDate = new Date(targetPet.birth_date);
+          const today = new Date();
+          const years = today.getFullYear() - birthDate.getFullYear();
+          const months = today.getMonth() - birthDate.getMonth();
+          
+          if (years > 0) {
+            age = `${years} año${years > 1 ? 's' : ''}`;
+          } else if (months > 0) {
+            age = `${months} mes${months > 1 ? 'es' : ''}`;
+          } else {
+            age = "Menos de 1 mes";
+          }
+        }
+
+        // Preparar información para la alerta
+        const alertInfo = {
+          petName: targetPet.name,
+          species: targetPet.species || "No especificada",
+          breed: targetPet.breed || "No especificada",
+          gender: targetPet.gender || "No especificado",
+          age: age,
+          distinguishingMarks: targetPet.distinguishing_marks || "No especificadas",
+          lastSeenLocation: alertData.last_seen_description || 
+                            additionalInfoText || 
+                            "Ubicación no especificada"
+        };
+
+        // Determinar el número de Twilio a usar (prioridad: producción)
+        const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER || "+573052227183";
+
+        // Enviar alertas a la ciudad
+        const alertResult = await sendLostPetAlertToCity(
+          alertInfo,
+          ownerProfile.city,
+          phoneNumber,
+          twilioPhoneNumber
+        );
+
+        if (alertResult.success) {
+          console.log(`✅ Alertas enviadas exitosamente: ${alertResult.successfulSends}/${alertResult.totalRecipients}`);
+        } else {
+          console.error(`⚠️  Error enviando alertas: ${alertResult.message}`);
+        }
+      }
+    } catch (alertError) {
+      console.error("❌ Error en envío automático de alertas:", alertError);
+      // No fallar la creación de alerta si el envío automático falla
+    }
+
     return `Alerta de mascota perdida creada exitosamente para ${targetPet.name}. ID de alerta: ${newAlert.id}. La mascota ha sido marcada como perdida en el sistema.`;
   } catch (error) {
     console.error("Error en createLostPetAlert:", error);
@@ -1342,7 +1619,8 @@ export const sendPetSightingNotification = async (
       // Datos del finder son opcionales en el template actual
       finderName: finderName || "Alguien",
       finderPhone: finderPhone || "No proporcionado",
-      twilioPhoneNumber: "+14707406662" // Número de Twilio de prueba
+      // twilioPhoneNumber: "+14707406662" // Número de Twilio de prueba
+      twilioPhoneNumber: "+573052227183" // Prioridad a producción
     };
 
     // Si se proporcionan datos del finder, los incluimos para futuro uso
@@ -1350,7 +1628,7 @@ export const sendPetSightingNotification = async (
       console.log(`📝 Datos del finder disponibles: ${finderName} (${finderPhone}) - Listos para nuevo template`);
     }
 
-    const response = await axios.post(testTemplateUrl, requestData);
+    const response = await axios.post(templateUrl, requestData);
 
     console.log(`✅ Notificación de avistamiento enviada exitosamente a ${ownerPhone}:`, response.data);
     console.log(`📱 Template usado: ${templateId} - Dueño: ${ownerName}, Mascota: ${petName}`);
@@ -1422,11 +1700,17 @@ interface ProfileValidationResult {
   } | null;
 }
 
-// Interfaz para el resultado de iniciar proceso de suscripción
+// Interfaz para el resultado de iniciar proceso de suscripción (actualizada)
 interface SubscriptionProcessResult {
   success: boolean;
   profileComplete: boolean;
   missingFields: string[];
+  planSelected?: {
+    id: string;
+    name: string;
+    price: number;
+    pet_limit: number;
+  };
   bankInfo: {
     bank: string;
     accountType: string;
@@ -1512,26 +1796,53 @@ export async function validateCompleteProfile(phoneNumber: string): Promise<Prof
 }
 
 /**
- * Función para iniciar el proceso de suscripción
+ * Función para iniciar el proceso de suscripción con un plan específico
  * @param phoneNumber El número de teléfono del usuario
+ * @param planId El ID del plan seleccionado por el usuario
  * @returns Objeto con información del proceso y datos bancarios
  */
-export async function initiateSubscriptionProcess(phoneNumber: string): Promise<SubscriptionProcessResult> {
+export async function initiateSubscriptionProcess(phoneNumber: string, planId: string): Promise<SubscriptionProcessResult> {
   try {
-    console.log(`🚀 Iniciando proceso de suscripción para ${phoneNumber}...`);
+    console.log(`🚀 Iniciando proceso de suscripción para ${phoneNumber} con plan ${planId}...`);
+
+    // Validar que el plan existe y está activo
+    const planDetails = await getPlanDetails(planId);
+    if (!planDetails) {
+      return {
+        success: false,
+        profileComplete: false,
+        missingFields: [],
+        bankInfo: {
+          bank: "",
+          accountType: "",
+          accountNumber: "",
+          accountHolder: "",
+          nit: "",
+          amount: "$0 COP",
+          concept: ""
+        },
+        message: "El plan seleccionado no es válido o no está disponible. Por favor, selecciona un plan válido."
+      };
+    }
 
     // Validar perfil completo
     const profileValidation = await validateCompleteProfile(phoneNumber);
 
-    // Información bancaria provisional para pruebas
+    // Información bancaria con el precio del plan seleccionado
+    const formattedPrice = planDetails.price.toLocaleString('es-CO', { 
+      style: 'currency', 
+      currency: 'COP',
+      minimumFractionDigits: 0 
+    });
+
     const bankInfo = {
       bank: "Bancolombia",
       accountType: "Cuenta de Ahorros",
       accountNumber: "123-456-789-01",
       accountHolder: "Olfatea SAS",
       nit: "123.456.789-1",
-      amount: "$26,000 COP",
-      concept: "Suscripción Anual Olfatea"
+      amount: formattedPrice,
+      concept: `Suscripción ${planDetails.name} - Olfatea`
     };
 
     if (!profileValidation.isComplete) {
@@ -1540,19 +1851,31 @@ export async function initiateSubscriptionProcess(phoneNumber: string): Promise<
         success: false,
         profileComplete: false,
         missingFields: profileValidation.missingFields,
+        planSelected: {
+          id: planDetails.id,
+          name: planDetails.name,
+          price: planDetails.price,
+          pet_limit: planDetails.pet_limit
+        },
         bankInfo,
-        message: `Para continuar con la suscripción, necesito que completes tu información de perfil. Faltan los siguientes datos: ${profileValidation.missingFields.join(", ")}.`
+        message: `Para continuar con la suscripción al ${planDetails.name}, necesito que completes tu información de perfil. Faltan los siguientes datos: ${profileValidation.missingFields.join(", ")}.`
       };
     }
 
-    console.log(`✅ Perfil completo. Mostrando información de pago...`);
+    console.log(`✅ Perfil completo. Mostrando información de pago para ${planDetails.name}...`);
 
     return {
       success: true,
       profileComplete: true,
       missingFields: [],
+      planSelected: {
+        id: planDetails.id,
+        name: planDetails.name,
+        price: planDetails.price,
+        pet_limit: planDetails.pet_limit
+      },
       bankInfo,
-      message: "Tu perfil está completo. Aquí tienes la información para realizar el pago de la suscripción anual ($26,000 COP)."
+      message: `Tu perfil está completo. Aquí tienes la información para realizar el pago del ${planDetails.name} (${formattedPrice} anuales).`
     };
 
   } catch (error) {
@@ -1567,8 +1890,8 @@ export async function initiateSubscriptionProcess(phoneNumber: string): Promise<
         accountNumber: "123-456-789-01",
         accountHolder: "Olfatea SAS",
         nit: "123.456.789-1",
-        amount: "$26,000 COP",
-        concept: "Suscripción Anual Olfatea"
+        amount: "$0 COP",
+        concept: "Suscripción Olfatea"
       },
       message: `Error técnico iniciando el proceso de suscripción: ${error}`
     };
@@ -1696,7 +2019,7 @@ export async function sendAdminNotificationEmail(
       port: parseInt(process.env.EMAIL_PORT || "587"),
       auth: {
         user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
+        pass: process.env.SENDGRID_API_KEY,
       },
     });
 
@@ -1796,8 +2119,8 @@ export async function sendAdminNotificationEmail(
 
     // Configurar opciones del email
     const mailOptions = {
-      from: '"Olfatea - Sistema Automático" <sistema@olfatea.com>',
-      to: process.env.ADMIN_EMAIL || "admin@olfatea.com",
+      from: '"Olfatea - Sistema Automático" <contacto@olfatea.com>',
+      to: process.env.ADMIN_EMAIL || "alejandro.b@ultimmarketing.com",
       cc: [
         // Puedes agregar más destinatarios aquí si es necesario
       ],
@@ -1815,3 +2138,595 @@ export async function sendAdminNotificationEmail(
     throw new Error(`Error enviando email de notificación: ${error.message}`);
   }
 }
+
+/**
+ * Función para enviar email de bienvenida a nuevo suscriptor
+ * @param profileData Datos del perfil del usuario
+ * @returns void
+ */
+export async function sendWelcomeEmail(
+  profileData: any
+): Promise<void> {
+  try {
+    console.log(`📧 Enviando email de bienvenida a ${profileData.full_name || 'usuario'}...`);
+
+    // Configurar transporter de nodemailer con SendGrid
+    const transporter = nodemailer.createTransport({
+      host: process.env.EMAIL_HOST,
+      port: parseInt(process.env.EMAIL_PORT || "587"),
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.SENDGRID_API_KEY,
+      },
+    });
+
+    // HTML template para el email de bienvenida
+    const emailHtml = `
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>¡Bienvenido a Olfatea! 🐾</title>
+      <style>
+        body { 
+          font-family: 'Arial', sans-serif; 
+          line-height: 1.6; 
+          color: #333; 
+          margin: 0; 
+          padding: 0; 
+          background-color: #f4f4f4; 
+        }
+        .container { 
+          max-width: 600px; 
+          margin: 0 auto; 
+          background-color: white; 
+          border-radius: 12px; 
+          overflow: hidden; 
+          box-shadow: 0 4px 12px rgba(0,0,0,0.1); 
+        }
+        .header { 
+          background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); 
+          color: white; 
+          padding: 40px 30px; 
+          text-align: center; 
+        }
+        .header h1 { 
+          margin: 0; 
+          font-size: 28px; 
+          font-weight: bold; 
+        }
+        .header p { 
+          margin: 10px 0 0 0; 
+          font-size: 16px; 
+          opacity: 0.9; 
+        }
+        .content { 
+          padding: 40px 30px; 
+        }
+        .welcome-message { 
+          background: linear-gradient(135deg, #f8fff8 0%, #e8f5e8 100%); 
+          padding: 25px; 
+          border-radius: 10px; 
+          margin: 20px 0; 
+          border-left: 4px solid #4CAF50; 
+        }
+        .user-info { 
+          background-color: #f9f9f9; 
+          padding: 20px; 
+          border-radius: 8px; 
+          margin: 25px 0; 
+        }
+        .feature-list { 
+          background-color: #fff3e0; 
+          padding: 25px; 
+          border-radius: 10px; 
+          margin: 25px 0; 
+        }
+        .feature-item { 
+          display: flex; 
+          align-items: center; 
+          margin: 15px 0; 
+          padding: 10px 0; 
+        }
+        .feature-icon { 
+          font-size: 24px; 
+          margin-right: 15px; 
+          min-width: 30px; 
+        }
+        .cta-section { 
+          text-align: center; 
+          background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); 
+          padding: 30px; 
+          border-radius: 10px; 
+          margin: 30px 0; 
+        }
+        .button { 
+          display: inline-block; 
+          background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%); 
+          color: white; 
+          padding: 15px 30px; 
+          text-decoration: none; 
+          border-radius: 25px; 
+          font-weight: bold; 
+          font-size: 16px; 
+          margin: 15px 0; 
+          box-shadow: 0 4px 8px rgba(76, 175, 80, 0.3); 
+          transition: all 0.3s ease; 
+        }
+        .footer { 
+          background-color: #333; 
+          color: white; 
+          padding: 30px; 
+          text-align: center; 
+        }
+        .footer p { 
+          margin: 5px 0; 
+        }
+        .social-links { 
+          margin: 20px 0; 
+        }
+        .social-links a { 
+          color: #4CAF50; 
+          text-decoration: none; 
+          margin: 0 10px; 
+          font-weight: bold; 
+        }
+        .highlight { 
+          color: #4CAF50; 
+          font-weight: bold; 
+        }
+        @media (max-width: 600px) {
+          .container { margin: 10px; }
+          .content, .header, .footer { padding: 20px !important; }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🐾 ¡Bienvenido a Olfatea!</h1>
+          <p>Tu compañero digital para cuidar a tus mascotas</p>
+        </div>
+        
+        <div class="content">
+          <div class="welcome-message">
+            <h2>¡Hola ${profileData.full_name || 'querido usuario'}! 👋</h2>
+            <p style="font-size: 18px; margin: 15px 0;">
+              <strong>¡Muchas gracias por ser parte de la familia Olfatea!</strong> 
+              Nos emociona muchísimo tenerte con nosotros en esta increíble aventura de cuidar y proteger a nuestras mascotas.
+            </p>
+            <p style="font-size: 16px; color: #666;">
+              Tu suscripción ha sido <span class="highlight">activada exitosamente</span> y ya puedes disfrutar de todos los beneficios que tenemos para ti y tus peludos compañeros.
+            </p>
+          </div>
+
+          <div class="user-info">
+            <h3>📋 Tu Información de Suscripción</h3>
+            <p><strong>📱 Teléfono:</strong> ${profileData.phone_number}</p>
+            <p><strong>📧 Email:</strong> ${profileData.email || 'No especificado'}</p>
+            <p><strong>🏙️ Ciudad:</strong> ${profileData.city || 'No especificado'}</p>
+            <p><strong>✅ Estado:</strong> <span class="highlight">Suscripción Activa</span></p>
+            <p><strong>⏰ Duración:</strong> 12 meses de protección total</p>
+          </div>
+
+          <div class="feature-list">
+            <h3>🎉 ¿Qué puedes hacer ahora con Olfatea?</h3>
+            
+            <div class="feature-item">
+              <div class="feature-icon">🐕</div>
+              <div>
+                <strong>Registra tus mascotas:</strong> Crea perfiles completos con fotos y detalles únicos de cada una de tus mascotas
+              </div>
+            </div>
+            
+            <div class="feature-item">
+              <div class="feature-icon">🚨</div>
+              <div>
+                <strong>Alertas de búsqueda:</strong> Si tu mascota se pierde, activa alertas inmediatas para encontrarla más rápido
+              </div>
+            </div>
+            
+            <div class="feature-item">
+              <div class="feature-icon">👀</div>
+              <div>
+                <strong>Reporta avistamientos:</strong> Ayuda a otros dueños reportando mascotas que encuentres en la calle
+              </div>
+            </div>
+            
+            <div class="feature-item">
+              <div class="feature-icon">🤖</div>
+              <div>
+                <strong>Asistente IA 24/7:</strong> Conversa con nuestro chatbot inteligente para resolver dudas y recibir ayuda
+              </div>
+            </div>
+            
+            <div class="feature-item">
+              <div class="feature-icon">🌍</div>
+              <div>
+                <strong>Red de apoyo:</strong> Forma parte de una comunidad que se cuida mutuamente
+              </div>
+            </div>
+          </div>
+
+          <div class="cta-section">
+            <h3>🚀 ¡Comienza ahora mismo!</h3>
+            <p>No pierdas tiempo, empieza a proteger a tus mascotas hoy mismo. 
+            Simplemente envía un mensaje por WhatsApp y nuestro asistente te guiará paso a paso.</p>
+            <a href="https://wa.me/5742044644" class="button">Empezar en WhatsApp 💬</a>
+            <p style="margin-top: 20px; font-size: 14px; color: #666;">
+              También puedes escribirnos directamente al <strong>+57 420 44644</strong>
+            </p>
+          </div>
+
+          <div style="background-color: #fff8e1; padding: 20px; border-radius: 8px; border-left: 4px solid #ffc107; margin: 25px 0;">
+            <h4>💡 Consejos para aprovechar al máximo Olfatea:</h4>
+            <ul style="margin: 15px 0; padding-left: 20px;">
+              <li>Registra todas tus mascotas con fotos claras y detalles únicos</li>
+              <li>Mantén actualizada tu información de contacto</li>
+              <li>Si encuentras una mascota perdida, repórtala inmediatamente</li>
+              <li>Comparte Olfatea con otros dueños de mascotas en tu zona</li>
+            </ul>
+          </div>
+
+          <div style="text-align: center; margin: 30px 0; padding: 20px; background: linear-gradient(135deg, #fce4ec 0%, #f8bbd9 100%); border-radius: 10px;">
+            <h3>💝 ¡Gracias por confiar en nosotros!</h3>
+            <p style="font-size: 18px; margin: 15px 0;">
+              En Olfatea creemos que <strong>cada mascota merece estar segura y protegida</strong>. 
+              Tu suscripción nos ayuda a seguir creciendo y mejorando nuestros servicios para toda la comunidad.
+            </p>
+            <p style="font-size: 16px; color: #666;">
+              Si tienes cualquier pregunta o sugerencia, no dudes en contactarnos. 
+              ¡Estamos aquí para ayudarte! 🐾❤️
+            </p>
+          </div>
+        </div>
+
+        <div class="footer">
+          <p><strong>🐾 Equipo Olfatea</strong></p>
+          <p>Tu red de protección para mascotas</p>
+          
+          <div class="social-links">
+            <a href="mailto:contacto@olfatea.com">📧 contacto@olfatea.com</a>
+            <a href="https://wa.me/5742044644">💬 WhatsApp</a>
+          </div>
+          
+          <p style="font-size: 14px; opacity: 0.8; margin-top: 20px;">
+            Este email fue enviado a ${profileData.email || profileData.phone_number}<br>
+            <small>Fecha de activación: ${new Date().toLocaleDateString('es-CO')}</small>
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>`;
+
+    // Configurar opciones del email
+    const mailOptions = {
+      from: '"Olfatea - Bienvenida" <soporte@olfatea.com>',
+      to: profileData.email,
+      subject: `🐾 ¡Bienvenido a Olfatea, ${profileData.full_name || 'querido usuario'}! Tu suscripción está activa`,
+      html: emailHtml
+    };
+
+    // Enviar el email
+    await transporter.sendMail(mailOptions);
+    
+    console.log(`✅ Email de bienvenida enviado exitosamente a ${profileData.email}`);
+
+  } catch (error: any) {
+    console.error(`❌ Error enviando email de bienvenida:`, error);
+    throw new Error(`Error enviando email de bienvenida: ${error.message}`);
+  }
+}
+
+//! ================== PRUEBAS ==================
+// let profileData = {
+//   full_name: "Alejandro Betancur",
+//   phone_number: "+573001234567",
+//   email: "alejandro.betancur@example.com"
+// };
+
+// let proofImageUrl = "https://firebasestorage.googleapis.com/v0/b/coltefinanciera-8a40a.appspot.com/o/images%2FComprobante%20de%20prueba.png?alt=media&token=8d955651-a67a-430f-aaac-23909500e787";
+
+// sendAdminNotificationEmail( profileData, proofImageUrl );
+
+//! ================== FUNCIONES DE PRUEBA PARA PLANES ==================
+
+/**
+ * Función de prueba para validar la funcionalidad de planes
+ * Esta función está comentada para evitar ejecución accidental
+ */
+/*
+export async function testPlanFunctionality() {
+  console.log("🧪 Iniciando pruebas de funcionalidad de planes...");
+  
+  try {
+    // 1. Probar obtener planes disponibles
+    console.log("\n1. Probando getAvailablePlans():");
+    const plans = await getAvailablePlans();
+    console.log(`📋 Se encontraron ${plans.length} planes:`, plans);
+    
+    // 2. Probar obtener detalles de un plan específico
+    if (plans.length > 0) {
+      console.log("\n2. Probando getPlanDetails():");
+      const planDetails = await getPlanDetails(plans[0].id);
+      console.log(`📋 Detalles del plan ${plans[0].name}:`, planDetails);
+    }
+    
+    // 3. Probar validación de límites para un usuario de prueba
+    console.log("\n3. Probando validatePetLimit():");
+    const testPhone = "+573001234567"; // Cambiar por un número real
+    const limitValidation = await validatePetLimit(testPhone);
+    console.log("🔢 Validación de límites:", limitValidation);
+    
+    // 4. Probar suscripción con información de plan
+    console.log("\n4. Probando hasActiveSubscription():");
+    const subscriptionStatus = await hasActiveSubscription(testPhone);
+    console.log("💳 Estado de suscripción:", subscriptionStatus);
+    
+    console.log("\n✅ Todas las pruebas completadas exitosamente!");
+    
+  } catch (error) {
+    console.error("❌ Error en las pruebas:", error);
+  }
+}
+
+// Para ejecutar las pruebas, descomenta la línea siguiente:
+// testPlanFunctionality();
+*/
+
+//! ================== FUNCIONES PARA ALERTAS DE MASCOTAS PERDIDAS ==================
+
+/**
+ * Función para normalizar nombres de ciudades y permitir coincidencias
+ * Remueve acentos, convierte a minúsculas y maneja variaciones comunes
+ * @param city El nombre de la ciudad a normalizar
+ * @returns El nombre de la ciudad normalizado
+ */
+export function normalizeCityName(city: string): string {
+  if (!city || city.trim() === "") {
+    return "";
+  }
+
+  // Convertir a minúsculas y remover espacios extra
+  let normalized = city.toLowerCase().trim();
+
+  // Reemplazar caracteres acentuados
+  const accentsMap: { [key: string]: string } = {
+    'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+    'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
+    'ä': 'a', 'ë': 'e', 'ï': 'i', 'ö': 'o', 'ü': 'u',
+    'â': 'a', 'ê': 'e', 'î': 'i', 'ô': 'o', 'û': 'u',
+    'ã': 'a', 'õ': 'o', 'ñ': 'n', 'ç': 'c'
+  };
+
+  normalized = normalized.split('').map(char => accentsMap[char] || char).join('');
+
+  // Remover caracteres especiales excepto espacios
+  normalized = normalized.replace(/[^a-z0-9\s]/g, '');
+
+  // Reemplazar múltiples espacios por uno solo
+  normalized = normalized.replace(/\s+/g, ' ').trim();
+
+  console.log(`🏙️  Ciudad normalizada: "${city}" → "${normalized}"`);
+  return normalized;
+}
+
+/**
+ * Interface para usuario de la ciudad
+ */
+interface CityUser {
+  id: string;
+  phone_number: string;
+  full_name: string | null;
+  city: string;
+}
+
+/**
+ * Función para obtener usuarios de una ciudad específica
+ * @param city El nombre de la ciudad (será normalizado automáticamente)
+ * @param excludePhone Número de teléfono a excluir (ej: el dueño de la mascota)
+ * @returns Array de usuarios de la ciudad o array vacío si hay error
+ */
+export async function getUsersByCity(
+  city: string,
+  excludePhone?: string
+): Promise<CityUser[]> {
+  try {
+    console.log(`🔍 Buscando usuarios en la ciudad: ${city}`);
+
+    if (!city || city.trim() === "") {
+      console.log("⚠️  Ciudad no especificada");
+      return [];
+    }
+
+    const normalizedCity = normalizeCityName(city);
+
+    // Obtener todos los usuarios con ciudad definida
+    const { data: allUsers, error } = await supabase
+      .from("profiles")
+      .select("id, phone_number, full_name, city")
+      .not("city", "is", null)
+      .not("phone_number", "is", null);
+
+    if (error) {
+      console.error("Error obteniendo usuarios:", error);
+      return [];
+    }
+
+    if (!allUsers || allUsers.length === 0) {
+      console.log("📭 No se encontraron usuarios con ciudad definida");
+      return [];
+    }
+
+    // Filtrar usuarios por ciudad normalizada
+    const cityUsers = allUsers.filter(user => {
+      const userCityNormalized = normalizeCityName(user.city || "");
+      const matches = userCityNormalized === normalizedCity;
+      
+      // Excluir el teléfono especificado si se proporciona
+      if (matches && excludePhone && user.phone_number === excludePhone) {
+        return false;
+      }
+      
+      return matches;
+    });
+
+    console.log(`✅ Encontrados ${cityUsers.length} usuarios en ${city} (excluyendo ${excludePhone || 'ninguno'})`);
+    return cityUsers;
+
+  } catch (error) {
+    console.error("Error en getUsersByCity:", error);
+    return [];
+  }
+}
+
+/**
+ * Interface para datos de alerta a enviar
+ */
+interface LostPetAlertInfo {
+  petName: string;
+  species: string;
+  breed: string;
+  gender: string;
+  age: string;
+  distinguishingMarks: string;
+  lastSeenLocation: string;
+}
+
+/**
+ * Interface para resultado de envío masivo
+ */
+interface MassAlertResult {
+  success: boolean;
+  totalRecipients: number;
+  successfulSends: number;
+  failedSends: number;
+  sentMessages: Array<{
+    phone: string;
+    name: string | null;
+    sid: string;
+    success: boolean;
+    error?: string;
+  }>;
+  message: string;
+}
+
+/**
+ * Función para enviar alertas de mascota perdida a todos los usuarios de una ciudad
+ * Template ID: HX2afddb1205d1d25b2b67224603335b0c
+ * Variables: {{1}} nombre, {{2}} especie/raza, {{3}} género/edad, {{4}} señas, {{5}} ubicación
+ * @param alertInfo Información de la alerta de mascota perdida
+ * @param ownerCity Ciudad del dueño (se normaliza automáticamente)
+ * @param ownerPhone Teléfono del dueño (para excluirlo de los envíos)
+ * @param twilioPhoneNumber Número de Twilio desde el cual enviar
+ * @returns Resultado del envío masivo con estadísticas
+ */
+export async function sendLostPetAlertToCity(
+  alertInfo: LostPetAlertInfo,
+  ownerCity: string,
+  ownerPhone: string,
+  twilioPhoneNumber: string
+): Promise<MassAlertResult> {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const client = twilio(accountSid, authToken);
+  const templateId = "HX2afddb1205d1d25b2b67224603335b0c";
+  const statusCallbackUrl = process.env.STATUS_CALLBACK_URL || "https://ultim.online";
+
+  const result: MassAlertResult = {
+    success: false,
+    totalRecipients: 0,
+    successfulSends: 0,
+    failedSends: 0,
+    sentMessages: [],
+    message: ""
+  };
+
+  try {
+    console.log("🚨 === INICIANDO ENVÍO MASIVO DE ALERTA ===");
+    console.log(`📍 Ciudad: ${ownerCity}`);
+    console.log(`🐾 Mascota: ${alertInfo.petName}`);
+
+    // Obtener usuarios de la misma ciudad
+    const cityUsers = await getUsersByCity(ownerCity, ownerPhone);
+    result.totalRecipients = cityUsers.length;
+
+    if (cityUsers.length === 0) {
+      result.message = `No se encontraron usuarios en la ciudad ${ownerCity} para notificar`;
+      console.log("⚠️  " + result.message);
+      return result;
+    }
+
+    console.log(`👥 Se enviarán ${cityUsers.length} alertas`);
+
+    // Preparar variables del template
+    // {{1}} nombre, {{2}} especie/raza, {{3}} género/edad, {{4}} señas, {{5}} ubicación
+    const contentVariables = JSON.stringify({
+      1: alertInfo.petName,
+      2: `${alertInfo.species}/${alertInfo.breed}`,
+      3: `${alertInfo.gender}/${alertInfo.age}`,
+      4: alertInfo.distinguishingMarks || "No especificadas",
+      5: alertInfo.lastSeenLocation
+    });
+
+    // Enviar mensajes con delay entre cada uno (para evitar rate limiting)
+    for (const user of cityUsers) {
+      try {
+        console.log(`📤 Enviando a ${user.phone_number} (${user.full_name || 'Sin nombre'})`);
+
+        const message = await client.messages.create({
+          from: `whatsapp:${twilioPhoneNumber}`,
+          to: `whatsapp:${user.phone_number}`,
+          contentSid: templateId,
+          contentVariables: contentVariables,
+          statusCallback: `${statusCallbackUrl}/olfatea/webhook/status`,
+        });
+
+        result.sentMessages.push({
+          phone: user.phone_number,
+          name: user.full_name,
+          sid: message.sid,
+          success: true
+        });
+
+        result.successfulSends++;
+        console.log(`✅ Enviado exitosamente - SID: ${message.sid}`);
+
+        // Delay de 500ms entre mensajes para evitar rate limiting
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (sendError: any) {
+        console.error(`❌ Error enviando a ${user.phone_number}:`, sendError.message);
+        
+        result.sentMessages.push({
+          phone: user.phone_number,
+          name: user.full_name,
+          sid: '',
+          success: false,
+          error: sendError.message
+        });
+
+        result.failedSends++;
+      }
+    }
+
+    // Construir mensaje de resultado
+    result.success = result.successfulSends > 0;
+    result.message = `Alertas enviadas: ${result.successfulSends}/${result.totalRecipients}. Fallidos: ${result.failedSends}`;
+
+    console.log("📊 === RESUMEN DE ENVÍO MASIVO ===");
+    console.log(`Total destinatarios: ${result.totalRecipients}`);
+    console.log(`Exitosos: ${result.successfulSends}`);
+    console.log(`Fallidos: ${result.failedSends}`);
+    console.log("=====================================");
+
+    return result;
+
+  } catch (error) {
+    console.error("❌ Error crítico en sendLostPetAlertToCity:", error);
+    result.message = `Error crítico: ${error instanceof Error ? error.message : 'Error desconocido'}`;
+    return result;
+  }
+}
+
