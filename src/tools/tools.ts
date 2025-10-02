@@ -23,6 +23,8 @@ import {
   validateCompleteProfile,
   initiateSubscriptionProcess,
   processPaymentProof,
+  // Agregar supabase para usar en neighborhood
+  supabase,
 } from "../utils/functions.js";
 
 // Interfaz para datos básicos de mascota (replicada desde functions.ts)
@@ -694,8 +696,12 @@ export const updateCompleteProfileTool = tool(
     // Usar la función updateClientProfile existente que acepta city y country,
     // pero necesitamos extenderla para neighborhood
     try {
+      console.log(`🔄 Actualizando perfil para: ${phoneNumber}`);
+      
       // Primero, actualizar los campos básicos que ya están soportados
       if (fullName || email || city || country) {
+        console.log(`📝 Actualizando campos básicos: fullName=${!!fullName}, email=${!!email}, city=${!!city}, country=${!!country}`);
+        
         const basicResult = await updateClientProfile(
           phoneNumber,
           fullName || undefined,
@@ -704,14 +710,17 @@ export const updateCompleteProfileTool = tool(
           country || undefined
         );
 
+        console.log(`✅ Resultado actualización básica:`, basicResult);
+
         if (!basicResult) {
+          console.log(`❌ Error: basicResult es null o falso`);
           return "❌ Error actualizando los datos básicos del perfil.";
         }
       }
 
       // Si hay neighborhood, actualizarlo por separado
       if (neighborhood && neighborhood.trim() !== "") {
-        const { supabase } = await import("../utils/functions");
+        console.log(`🏠 Actualizando neighborhood: ${neighborhood}`);
         
         // Buscar el perfil por teléfono
         const { data: profile, error: profileError } = await supabase
@@ -721,6 +730,7 @@ export const updateCompleteProfileTool = tool(
           .maybeSingle();
 
         if (profileError || !profile) {
+          console.log(`❌ Error encontrando perfil para neighborhood:`, profileError);
           return "❌ Error encontrando el perfil para actualizar el barrio.";
         }
 
@@ -731,14 +741,22 @@ export const updateCompleteProfileTool = tool(
           .eq("id", profile.id);
 
         if (updateError) {
+          console.log(`❌ Error actualizando neighborhood:`, updateError);
           return "❌ Error actualizando el barrio en el perfil.";
         }
+        
+        console.log(`✅ Neighborhood actualizado exitosamente`);
       }
 
+      console.log(`🔍 Validando perfil completo...`);
+      
       // Verificar si el perfil quedó completo
       const validation = await validateCompleteProfile(phoneNumber);
       
+      console.log(`📊 Resultado validación:`, validation);
+      
       if (validation.isComplete) {
+        console.log(`✅ Perfil completo!`);
         return `✅ ¡Perfecto! Tu perfil ha sido actualizado y ahora está completo:
 
 📋 **Información Actualizada:**
@@ -750,6 +768,8 @@ export const updateCompleteProfileTool = tool(
 
 Ya puedes proceder con la suscripción.`;
       } else {
+        console.log(`⚠️ Perfil incompleto, faltan campos:`, validation.missingFields);
+        
         const fieldNames: { [key: string]: string } = {
           full_name: "Nombre completo",
           email: "Email", 
@@ -770,6 +790,7 @@ ${missingFieldsText}
       }
 
     } catch (error) {
+      console.error(`❌ Error en updateCompleteProfileTool:`, error);
       return `❌ Error actualizando el perfil: ${error}`;
     }
   },
