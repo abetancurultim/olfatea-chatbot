@@ -1775,7 +1775,7 @@ export async function searchLostPetsFTS(userDescription: string): Promise<any> {
 
   const { data: matches, error } = await supabase.rpc('search_lost_pets_by_text', {
     search_text: userDescription,
-    match_count: 3, // Traemos los 3 mejores resultados
+    match_count: 5, // Traemos los 5 mejores resultados
   });
 
   if (error) {

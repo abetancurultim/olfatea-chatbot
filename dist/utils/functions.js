@@ -1446,7 +1446,7 @@ export function searchLostPetsFTS(userDescription) {
         }
         const { data: matches, error } = yield supabase.rpc('search_lost_pets_by_text', {
             search_text: userDescription,
-            match_count: 3, // Traemos los 3 mejores resultados
+            match_count: 5, // Traemos los 5 mejores resultados
         });
         if (error) {
             console.error("Error en la búsqueda Full-Text Search:", error);
