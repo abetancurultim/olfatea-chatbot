@@ -1398,7 +1398,7 @@ export const sendPetSightingNotification = (ownerPhone, ownerName, petName, find
         const templateUrl = "https://ultim.online/olfatea/send-template";
         const testTemplateUrl = "http://localhost:3025/olfatea/send-template";
         // Template provisional - solo requiere nombre del dueño y nombre de la mascota
-        const templateId = "HX15b0e1d8a3505cb4d2723e03b4337e6f";
+        const templateId = "HXf844d5b929d82e16762e24db2aab1751";
         const requestData = {
             to: ownerPhone,
             templateId: templateId,
@@ -1559,7 +1559,7 @@ export function initiateSubscriptionProcess(phoneNumber, planId) {
             const bankInfo = {
                 bank: "Bancolombia",
                 accountType: "Cuenta de Ahorros",
-                accountNumber: "123-456-789-01",
+                accountNumber: "33191746681",
                 accountHolder: "Olfatea SAS",
                 nit: "123.456.789-1",
                 amount: formattedPrice,
@@ -1605,7 +1605,7 @@ export function initiateSubscriptionProcess(phoneNumber, planId) {
                 bankInfo: {
                     bank: "Bancolombia",
                     accountType: "Cuenta de Ahorros",
-                    accountNumber: "123-456-789-01",
+                    accountNumber: "33191746681",
                     accountHolder: "Olfatea SAS",
                     nit: "123.456.789-1",
                     amount: "$0 COP",
@@ -2244,7 +2244,7 @@ export function getUsersByCity(city, excludePhone) {
 }
 /**
  * Función para enviar alertas de mascota perdida a todos los usuarios de una ciudad
- * Template ID: HX2afddb1205d1d25b2b67224603335b0c
+ * Template ID: HX9ac62fa46bf8a8cba672f9d31d4031fb
  * Variables: {{1}} nombre, {{2}} especie/raza, {{3}} género/edad, {{4}} señas, {{5}} ubicación
  * @param alertInfo Información de la alerta de mascota perdida
  * @param ownerCity Ciudad del dueño (se normaliza automáticamente)
@@ -2257,7 +2257,7 @@ export function sendLostPetAlertToCity(alertInfo, ownerCity, ownerPhone, twilioP
         const accountSid = process.env.TWILIO_ACCOUNT_SID;
         const authToken = process.env.TWILIO_AUTH_TOKEN;
         const client = twilio(accountSid, authToken);
-        const templateId = "HX2afddb1205d1d25b2b67224603335b0c";
+        const templateId = "HX9ac62fa46bf8a8cba672f9d31d4031fb";
         const statusCallbackUrl = process.env.STATUS_CALLBACK_URL || "https://ultim.online";
         const result = {
             success: false,
