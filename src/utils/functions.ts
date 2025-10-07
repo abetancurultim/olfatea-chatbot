@@ -1976,7 +1976,26 @@ export async function initiateSubscriptionProcess(phoneNumber: string, planId: s
       };
     }
 
-    console.log(`✅ Perfil completo. Mostrando información de pago para ${planDetails.name}...`);
+    console.log(`✅ Perfil completo. Guardando plan seleccionado y mostrando información de pago para ${planDetails.name}...`);
+
+    // Guardar el plan seleccionado en el perfil del usuario
+    const { error: updatePlanError } = await supabase
+      .from("profiles")
+      .update({ plan_id: planDetails.id })
+      .eq("phone_number", phoneNumber);
+
+    if (updatePlanError) {
+      console.error("Error guardando plan en perfil:", updatePlanError);
+      return {
+        success: false,
+        profileComplete: true,
+        missingFields: [],
+        bankInfo,
+        message: `Error técnico guardando el plan seleccionado: ${updatePlanError.message}`
+      };
+    }
+
+    console.log(`💾 Plan ${planDetails.name} guardado exitosamente en el perfil`);
 
     return {
       success: true,
@@ -2008,6 +2027,95 @@ export async function initiateSubscriptionProcess(phoneNumber: string, planId: s
         concept: "Suscripción Olfatea"
       },
       message: `Error técnico iniciando el proceso de suscripción: ${error}`
+    };
+  }
+}
+
+/**
+ * Función auxiliar para activar automáticamente una suscripción
+ * Lee el plan_id del perfil y activa la suscripción inmediatamente
+ * @param phoneNumber El número de teléfono del usuario
+ * @returns Objeto con resultado de la activación
+ */
+export async function activateSubscriptionAutomatically(phoneNumber: string): Promise<{
+  success: boolean;
+  planName?: string;
+  planPrice?: number;
+  expiresAt?: string;
+  error?: string;
+}> {
+  try {
+    console.log(`🚀 Activando suscripción automáticamente para ${phoneNumber}...`);
+
+    // Obtener perfil con plan_id
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id, plan_id")
+      .eq("phone_number", phoneNumber)
+      .maybeSingle();
+
+    if (profileError) {
+      throw new Error(`Error obteniendo perfil: ${profileError.message}`);
+    }
+
+    if (!profile) {
+      return {
+        success: false,
+        error: "Perfil no encontrado"
+      };
+    }
+
+    if (!profile.plan_id) {
+      return {
+        success: false,
+        error: "No hay plan seleccionado para activar"
+      };
+    }
+
+    // Obtener detalles del plan
+    const planDetails = await getPlanDetails(profile.plan_id);
+    if (!planDetails) {
+      return {
+        success: false,
+        error: "Plan no válido o no encontrado"
+      };
+    }
+
+    // Calcular fechas de activación y expiración
+    const now = new Date();
+    const activatedAt = now.toISOString();
+    const expiresAt = new Date(now.getTime() + (planDetails.duration_months * 30 * 24 * 60 * 60 * 1000));
+    const expiresAtISO = expiresAt.toISOString();
+
+    // Activar la suscripción
+    const { error: updateError } = await supabase
+      .from("profiles")
+      .update({
+        is_subscriber: true,
+        subscription_activated_at: activatedAt,
+        subscription_expires_at: expiresAtISO,
+        subscription_status: "active"
+      })
+      .eq("phone_number", phoneNumber);
+
+    if (updateError) {
+      throw new Error(`Error activando suscripción: ${updateError.message}`);
+    }
+
+    console.log(`✅ Suscripción activada exitosamente: ${planDetails.name} hasta ${expiresAt.toLocaleDateString('es-CO')}`);
+
+    return {
+      success: true,
+      planName: planDetails.name,
+      planPrice: planDetails.price,
+      expiresAt: expiresAtISO
+    };
+
+  } catch (error) {
+    console.error("Error en activateSubscriptionAutomatically:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Error desconocido"
     };
   }
 }
@@ -2072,34 +2180,65 @@ export async function processPaymentProof(
       };
     }
 
-    // Actualizar estado de suscripción a "pending"
-    const { error: updateError } = await supabase
-      .from("profiles")
-      .update({ subscription_status: "pending" })
-      .eq("phone_number", phoneNumber);
+    // ACTIVAR SUSCRIPCIÓN AUTOMÁTICAMENTE
+    console.log(`🚀 Activando suscripción automáticamente...`);
+    const activationResult = await activateSubscriptionAutomatically(phoneNumber);
 
-    if (updateError) {
-      throw new Error(`Error actualizando estado de suscripción: ${updateError.message}`);
+    if (!activationResult.success) {
+      console.error("Error activando suscripción:", activationResult.error);
+      // Fallback: actualizar solo a pending si falla la activación automática
+      const { error: updateError } = await supabase
+        .from("profiles")
+        .update({ subscription_status: "pending" })
+        .eq("phone_number", phoneNumber);
+
+      if (updateError) {
+        throw new Error(`Error actualizando estado de suscripción: ${updateError.message}`);
+      }
+
+      return {
+        success: false,
+        adminNotified: false,
+        subscriptionStatus: "pending",
+        message: `Error activando automáticamente la suscripción: ${activationResult.error}. He marcado tu solicitud como pendiente para revisión manual.`,
+        error: activationResult.error
+      };
     }
 
-    // Enviar notificación al admin
+    console.log(`✅ Suscripción activada automáticamente: ${activationResult.planName}`);
+
+    // Enviar email al admin notificando la activación automática
     let adminNotified = false;
     try {
-      await sendAdminNotificationEmail(profileValidation.profile, proofImageUrl);
+      await sendAdminNotificationEmail(profileValidation.profile, proofImageUrl, true, activationResult);
       adminNotified = true;
-      console.log(`📧 Admin notificado exitosamente para ${phoneNumber}`);
+      console.log(`📧 Admin notificado exitosamente sobre activación automática para ${phoneNumber}`);
     } catch (emailError) {
       console.error("Error enviando email al admin:", emailError);
       // No fallar todo el proceso por error de email
     }
 
-    console.log(`✅ Comprobante procesado exitosamente para ${phoneNumber}`);
+    const expiresDate = activationResult.expiresAt ? new Date(activationResult.expiresAt).toLocaleDateString('es-CO') : 'fecha no disponible';
+    const priceText = activationResult.planPrice ? activationResult.planPrice.toLocaleString('es-CO', { 
+      style: 'currency', 
+      currency: 'COP',
+      minimumFractionDigits: 0 
+    }) : '';
+
+    console.log(`✅ Comprobante procesado y suscripción activada exitosamente para ${phoneNumber}`);
 
     return {
       success: true,
       adminNotified,
-      subscriptionStatus: "pending",
-      message: `¡Perfecto! He recibido tu comprobante de pago. ${adminNotified ? 'He notificado al equipo administrativo' : 'Estoy notificando al equipo administrativo'} para que validen el pago y activen tu suscripción. Esto puede tomar entre 24-48 horas hábiles. Te confirmaremos por este medio cuando esté lista.`
+      subscriptionStatus: "active",
+      message: `🎉 ¡Excelente! Tu comprobante ha sido procesado y tu suscripción al ${activationResult.planName} ${priceText ? `(${priceText})` : ''} ha sido ACTIVADA INMEDIATAMENTE.
+
+✅ **Tu suscripción está activa hasta:** ${expiresDate}
+🐾 **Ya puedes registrar tus mascotas y usar todos los servicios de Olfatea.**
+
+${adminNotified ? 'He notificado al equipo administrativo' : 'Estoy notificando al equipo administrativo'} para la validación final del pago. Si hay algún problema con el comprobante, te contactaremos.
+
+¡Bienvenido a la familia Olfatea! 🐾`
     };
 
   } catch (error) {
@@ -2115,14 +2254,18 @@ export async function processPaymentProof(
 }
 
 /**
- * Función para enviar email de notificación al admin sobre nueva suscripción pendiente
+ * Función para enviar email de notificación al admin sobre nueva suscripción
  * @param profileData Datos del perfil del usuario
  * @param proofImageUrl URL de la imagen del comprobante
+ * @param isAutoActivated Si la suscripción ya fue activada automáticamente
+ * @param activationData Datos de la activación (solo si isAutoActivated es true)
  * @returns void
  */
 export async function sendAdminNotificationEmail(
   profileData: any,
-  proofImageUrl: string
+  proofImageUrl: string,
+  isAutoActivated: boolean = false,
+  activationData?: any
 ): Promise<void> {
   try {
     console.log(`📧 Enviando notificación de suscripción al admin...`);
@@ -2138,34 +2281,55 @@ export async function sendAdminNotificationEmail(
     });
 
     // HTML template para el email
+    const emailTitle = isAutoActivated ? "Suscripción Activada Automáticamente" : "Nueva Suscripción Pendiente";
+    const headerColor = isAutoActivated ? "#28a745" : "#4CAF50";
+    const statusIcon = isAutoActivated ? "✅" : "🕐";
+    const statusText = isAutoActivated ? "ACTIVADA" : "PENDIENTE";
+    
+    // Obtener información del plan si está disponible
+    const planInfo = activationData ? {
+      name: activationData.planName || 'Plan no especificado',
+      price: activationData.planPrice || 0,
+      expiresAt: activationData.expiresAt ? new Date(activationData.expiresAt).toLocaleDateString('es-CO') : 'No disponible'
+    } : {
+      name: 'Plan no especificado',
+      price: 0,
+      expiresAt: 'No disponible'
+    };
+
     const emailHtml = `
     <!DOCTYPE html>
     <html lang="es">
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Nueva Suscripción Pendiente - Olfatea</title>
+      <title>${emailTitle} - Olfatea</title>
       <style>
         body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
         .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
+        .header { background-color: ${headerColor}; color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }
         .content { background-color: #f9f9f9; padding: 30px; border: 1px solid #ddd; }
         .user-info { background-color: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
         .info-row { display: flex; margin: 10px 0; }
         .info-label { font-weight: bold; min-width: 120px; }
         .proof-section { background-color: #e8f5e8; padding: 20px; border-radius: 8px; margin: 20px 0; }
-        .button { display: inline-block; background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 0; }
+        .button { display: inline-block; background-color: ${headerColor}; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 10px 0; }
         .footer { background-color: #333; color: white; padding: 20px; text-align: center; border-radius: 0 0 8px 8px; }
+        .status-active { background-color: #d4edda; border-left: 4px solid #28a745; }
+        .status-pending { background-color: #fff3cd; border-left: 4px solid #ffc107; }
       </style>
     </head>
     <body>
       <div class="container">
         <div class="header">
-          <h1>🐾 Nueva Suscripción Pendiente - Olfatea</h1>
+          <h1>🐾 ${emailTitle} - Olfatea</h1>
         </div>
         
         <div class="content">
-          <p><strong>¡Tienes una nueva solicitud de suscripción para validar!</strong></p>
+          ${isAutoActivated ? 
+            '<p><strong>✅ Una suscripción ha sido activada automáticamente!</strong></p>' :
+            '<p><strong>🕐 Tienes una nueva solicitud de suscripción para validar!</strong></p>'
+          }
           
           <div class="user-info">
             <h3>📋 Datos del Usuario</h3>
@@ -2202,29 +2366,46 @@ export async function sendAdminNotificationEmail(
             <p><small>URL: ${proofImageUrl}</small></p>
           </div>
 
-          <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107;">
-            <h4>⚡ Acciones a Realizar:</h4>
-            <ol>
-              <li>Verificar el comprobante de pago haciendo clic en el botón superior</li>
-              <li>Validar que el monto sea de $26,000 COP</li>
-              <li>Confirmar que el pago haya llegado a la cuenta de Olfatea</li>
-              <li>Si todo está correcto, activar la suscripción en el panel administrativo</li>
-              <li>Notificar al usuario vía WhatsApp sobre la activación</li>
-            </ol>
-          </div>
-
           <div style="background-color: #d1ecf1; padding: 15px; border-radius: 8px; border-left: 4px solid #17a2b8; margin-top: 20px;">
             <h4>💰 Detalles de la Suscripción:</h4>
-            <p><strong>Plan:</strong> Suscripción Anual Olfatea<br>
-            <strong>Monto:</strong> $26,000 COP<br>
-            <strong>Duración:</strong> 12 meses<br>
-            <strong>Estado Actual:</strong> Pendiente de Validación</p>
+            <p><strong>Plan:</strong> ${planInfo.name}<br>
+            <strong>Monto:</strong> ${planInfo.price.toLocaleString('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 })}<br>
+            <strong>Estado:</strong> ${statusIcon} ${statusText}<br>
+            ${isAutoActivated ? `<strong>Expira:</strong> ${planInfo.expiresAt}<br>` : ''}
+            <strong>Fecha de Solicitud:</strong> ${new Date().toLocaleString('es-CO')}</p>
+          </div>
+
+          <div class="${isAutoActivated ? 'status-active' : 'status-pending'}" style="padding: 15px; border-radius: 8px; margin-top: 20px;">
+            ${isAutoActivated ? `
+              <h4>✅ Suscripción Activada Automáticamente</h4>
+              <p><strong>La suscripción ya está activa y el usuario puede usar todos los servicios.</strong></p>
+              <h5>🔍 Acciones de Validación Pendientes:</h5>
+              <ol>
+                <li>Verificar que el comprobante de pago sea válido</li>
+                <li>Confirmar que el pago haya llegado a la cuenta de Olfatea</li>
+                <li>Si hay algún problema, desactivar la suscripción desde el panel administrativo</li>
+                <li>Si todo está correcto, no se requiere acción adicional</li>
+              </ol>
+              <p><strong>⚠️ Nota:</strong> Si detectas algún problema con el pago, puedes desactivar la suscripción desde el panel administrativo.</p>
+            ` : `
+              <h4>⚡ Acciones a Realizar:</h4>
+              <ol>
+                <li>Verificar el comprobante de pago haciendo clic en el botón superior</li>
+                <li>Validar que el monto sea correcto</li>
+                <li>Confirmar que el pago haya llegado a la cuenta de Olfatea</li>
+                <li>Si todo está correcto, activar la suscripción en el panel administrativo</li>
+                <li>Notificar al usuario vía WhatsApp sobre la activación</li>
+              </ol>
+            `}
           </div>
         </div>
 
         <div class="footer">
           <p>Este es un mensaje automático del sistema de suscripciones de Olfatea.<br>
-          Por favor, procesa esta solicitud lo antes posible.</p>
+          ${isAutoActivated ? 
+            'La suscripción fue activada automáticamente. Valida el pago cuando sea posible.' : 
+            'Por favor, procesa esta solicitud lo antes posible.'
+          }</p>
           <small>Fecha: ${new Date().toLocaleString('es-CO')}</small>
         </div>
       </div>
@@ -2232,13 +2413,17 @@ export async function sendAdminNotificationEmail(
     </html>`;
 
     // Configurar opciones del email
+    const emailSubject = isAutoActivated 
+      ? `✅ Suscripción Activada Automáticamente - ${profileData.full_name || 'Usuario'} (${profileData.phone_number})`
+      : `🕐 Nueva Suscripción Pendiente - ${profileData.full_name || 'Usuario'} (${profileData.phone_number})`;
+
     const mailOptions = {
       from: '"Olfatea - Sistema Automático" <contacto@olfatea.com>',
-      to: process.env.ADMIN_EMAIL || "alejandro.b@ultimmarketing.com",
+      to: "contacto@olfatea.com",
       cc: [
-        // Puedes agregar más destinatarios aquí si es necesario
+        "mariana.b@ultimmarketing.com"
       ],
-      subject: `🐾 Nueva Suscripción Pendiente - ${profileData.full_name || 'Usuario'} (${profileData.phone_number})`,
+      subject: emailSubject,
       html: emailHtml
     };
 

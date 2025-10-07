@@ -945,20 +945,13 @@ export const processPaymentProofTool = tool(
       return `❌ ${result.message}`;
     }
 
-    return `${result.message}
-
-📊 **Estado de tu Suscripción:** ${result.subscriptionStatus === 'pending' ? '🟡 Pendiente de Validación' : result.subscriptionStatus}
-
-✅ **Próximos Pasos:**
-• El equipo administrativo validará tu pago
-• Recibirás confirmación en 24-48 horas hábiles
-• Una vez activada, podrás registrar tus mascotas sin límites
-
-¡Gracias por confiar en Olfatea! 🐾`;
+    // La respuesta ya está formateada en la función processPaymentProof
+    // Solo devolvemos el mensaje directamente
+    return result.message;
   },
   {
     name: "processPaymentProofTool",
-    description: "Procesa el comprobante de pago enviado por el usuario y notifica al admin para validación. Usar solo cuando el usuario envíe la imagen del comprobante.",
+    description: "Procesa el comprobante de pago enviado por el usuario y ACTIVA INMEDIATAMENTE la suscripción, luego notifica al admin para validación posterior. La suscripción queda activa desde el momento del envío del comprobante.",
     schema: processPaymentProofSchema,
   }
 );
