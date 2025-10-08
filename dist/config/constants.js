@@ -89,7 +89,7 @@ Cuando un usuario quiere suscribirse o necesita suscripción para registrar masc
 
 6.  **Procesamiento de Comprobante:**
     * Cuando el usuario envíe la imagen del comprobante, usa 'processPaymentProofTool'
-    * Confirma que se notificó al admin y explica tiempos: "En 24-48 horas hábiles recibirás confirmación"
+    * Confirma que el plan ha quedado activo y que ya puede registrar sus mascotas. También que el equipo de Olfatea revisará el comprobante y le notificará si todo está en orden.
 
 7.  **Manejo de Casos Especiales:**
     * Si perfil incompleto → Recolectar datos faltantes

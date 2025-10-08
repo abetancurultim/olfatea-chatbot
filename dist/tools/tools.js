@@ -700,7 +700,7 @@ export const initiateSubscriptionTool = tool((_a) => __awaiter(void 0, [_a], voi
 1. Realiza la transferencia por el valor exacto de ${result.bankInfo.amount}
 2. Una vez hayas hecho el pago, **envíame una foto del comprobante de transferencia**
 3. Notificaré al equipo administrativo para validar tu pago
-4. En 24-48 horas hábiles recibirás la confirmación de activación
+4. Si existe alguna novedad con el pago, te contactaremos directamente
 
 ⚠️ **Importante:** El comprobante de pago es obligatorio para activar tu suscripción.`;
 }), {
