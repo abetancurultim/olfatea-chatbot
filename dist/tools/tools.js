@@ -691,8 +691,6 @@ export const initiateSubscriptionTool = tool((_a) => __awaiter(void 0, [_a], voi
 🏦 **Banco:** ${result.bankInfo.bank}
 💰 **Tipo de Cuenta:** ${result.bankInfo.accountType}
 🔢 **Número de Cuenta:** ${result.bankInfo.accountNumber}
-👤 **Titular:** ${result.bankInfo.accountHolder}
-📄 **NIT:** ${result.bankInfo.nit}
 💵 **Valor a Pagar:** ${result.bankInfo.amount}
 📝 **Concepto:** ${result.bankInfo.concept}
 
