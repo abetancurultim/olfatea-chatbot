@@ -103,23 +103,41 @@ export const checkSubscriptionStatusTool = tool(
     const subscriptionStatus = await hasActiveSubscription(phoneNumber);
     
     if (subscriptionStatus.active) {
-      // Obtener información de límites de mascotas
-      const petLimitInfo = await validatePetLimit(phoneNumber);
+      // Mostrar TODAS las suscripciones activas del usuario
+      let subscriptionsMessage = `✅ SUSCRIPCIÓN ACTIVA\n\n`;
       
-      let planMessage = "";
-      if (subscriptionStatus.plan) {
-        planMessage = `\n📋 PLAN: ${subscriptionStatus.plan.name} (${subscriptionStatus.plan.price.toLocaleString('es-CO', { style: 'currency', currency: 'COP' })})`;
-        planMessage += `\n🐾 MASCOTAS: ${petLimitInfo.currentPetCount}/${subscriptionStatus.plan.pet_limit} registradas`;
+      if (subscriptionStatus.subscriptions.length > 0) {
+        subscriptionsMessage += `📋 Planes activos (${subscriptionStatus.subscriptions.length}):\n\n`;
         
-        if (petLimitInfo.canRegister) {
-          const remaining = subscriptionStatus.plan.pet_limit - petLimitInfo.currentPetCount;
-          planMessage += `\n✅ Puede registrar ${remaining} mascota(s) más`;
+        subscriptionStatus.subscriptions.forEach((sub, index) => {
+          const planName = sub.plan?.name || 'Plan desconocido';
+          const petLimit = sub.plan?.pet_limit || 0;
+          const price = sub.plan?.price || 0;
+          const expiresAt = sub.expires_at ? new Date(sub.expires_at).toLocaleDateString('es-CO') : 'No especificado';
+          
+          const limitText = petLimit >= 999 ? 'ilimitadas' : `${petLimit} mascota${petLimit !== 1 ? 's' : ''}`;
+          
+          subscriptionsMessage += `${index + 1}. 🐾 ${planName}\n`;
+          subscriptionsMessage += `   • Límite: ${limitText}\n`;
+          subscriptionsMessage += `   • Precio: ${price.toLocaleString('es-CO', { style: 'currency', currency: 'COP' })}\n`;
+          subscriptionsMessage += `   • Expira: ${expiresAt}\n\n`;
+        });
+        
+        subscriptionsMessage += `📊 RESUMEN:\n`;
+        subscriptionsMessage += `• Límite total: ${subscriptionStatus.totalPetLimit >= 999 ? 'ilimitado' : subscriptionStatus.totalPetLimit} mascota${subscriptionStatus.totalPetLimit !== 1 ? 's' : ''}\n`;
+        subscriptionsMessage += `• Mascotas registradas: ${subscriptionStatus.currentPetCount}\n`;
+        
+        const canRegister = subscriptionStatus.totalPetLimit >= 999 || subscriptionStatus.currentPetCount < subscriptionStatus.totalPetLimit;
+        const remaining = subscriptionStatus.totalPetLimit >= 999 ? '∞' : (subscriptionStatus.totalPetLimit - subscriptionStatus.currentPetCount);
+        
+        if (canRegister) {
+          subscriptionsMessage += `✅ Puede registrar ${remaining === '∞' ? 'más mascotas (ilimitado)' : `${remaining} mascota(s) más`}\n`;
         } else {
-          planMessage += `\n⚠️ Ha alcanzado el límite de su plan`;
+          subscriptionsMessage += `⚠️ Ha alcanzado el límite total de sus planes\n`;
         }
       }
       
-      return `✅ SUSCRIPCIÓN ACTIVA: ${subscriptionStatus.reason}${planMessage}\n\n✅ El usuario PUEDE gestionar sus mascotas.`;
+      return subscriptionsMessage;
     } else {
       // Determinar el mensaje específico según el estado
       let message = "";
@@ -149,7 +167,7 @@ export const checkSubscriptionStatusTool = tool(
   },
   {
     name: "checkSubscriptionStatusTool",
-    description: "HERRAMIENTA CRÍTICA: Verifica si un usuario tiene suscripción activa y muestra información detallada del plan (límites de mascotas, mascotas registradas). DEBE usarse SIEMPRE antes de crear o modificar mascotas para evitar desperdiciar el tiempo del usuario.",
+    description: "HERRAMIENTA CRÍTICA: Verifica si un usuario tiene suscripciones activas y muestra información detallada de TODOS sus planes (límites de mascotas, mascotas registradas, fechas de expiración). DEBE usarse SIEMPRE antes de crear o modificar mascotas para evitar desperdiciar el tiempo del usuario.",
     schema: z.object({
       phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
     }),
