@@ -37,9 +37,26 @@ interface PetData {
   gender?: string;
   photo_url?: string;
   distinguishing_marks?: string;
+  size?: string; // 🆕 Tamaño: Miniatura, Pequeño, Mediano, Grande, Gigante
+  coat_type?: string; // 🆕 Tipo de pelaje: Corto, Medio, Largo, Sin Pelo
 }
 
-// Esquema Zod para validación de datos básicos de mascota
+// 🆕 NUEVO SCHEMA con validaciones flexibles (la IA normaliza según prompt)
+const createPetDataSchema = z.object({
+  clientNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+  name: z.string().min(1, "El nombre de la mascota es OBLIGATORIO"),
+  species: z.string().min(1, "La especie es OBLIGATORIA (Perro, Gato, etc.)"),
+  breed: z.string().min(1, "La raza específica es OBLIGATORIA"),
+  color: z.string().min(1, "El color predominante es OBLIGATORIO"),
+  gender: z.string().min(1, "El género es OBLIGATORIO (sugiere: Macho o Hembra)"),
+  photo_url: z.string().url("⚠️ La foto es OBLIGATORIA y debe ser una URL válida"),
+  size: z.string().min(1, "El tamaño es OBLIGATORIO (sugiere: Miniatura, Pequeño, Mediano, Grande, Gigante)"),
+  coat_type: z.string().min(1, "El tipo de pelaje es OBLIGATORIO (sugiere: Corto, Medio, Largo, Sin Pelo)"),
+  birth_date: z.string().optional(),
+  distinguishing_marks: z.string().min(5, "⚠️ Las marcas distintivas son MUY RECOMENDADAS (mínimo 5 caracteres)").optional(),
+});
+
+// Schema antiguo mantenido para compatibilidad (deprecado)
 const basicPetDataSchema = z.object({
   clientNumber: z.string().min(1, "El número de teléfono es obligatorio"),
   name: z.string().min(1, "El nombre de la mascota es obligatorio"),
@@ -175,44 +192,78 @@ export const checkSubscriptionStatusTool = tool(
 );
 
 export const createPetTool = tool(
-  async ({ clientNumber, name, species, breed, gender, photo_url }) => {
-    // Validar formato de URL si se proporciona
-    if (photo_url && photo_url.trim() !== "") {
-      try {
-        new URL(photo_url.trim());
-      } catch (error) {
-        return "Error: La URL de la foto no es válida. Debe ser una URL completa (ej: https://ejemplo.com/imagen.jpg).";
-      }
+  async ({ clientNumber, name, species, breed, color, gender, photo_url, size, coat_type, birth_date, distinguishing_marks }) => {
+    
+    // 🆕 VALIDACIÓN ADICIONAL de URL
+    try {
+      new URL(photo_url.trim());
+    } catch (error) {
+      return "❌ ERROR: La URL de la foto no es válida. Debe ser una URL completa (ej: https://ejemplo.com/imagen.jpg).";
     }
 
-    // Crear objeto PetData con los datos básicos
+    // Crear objeto PetData con TODOS los campos obligatorios
     const petData: PetData = {
       name: name.trim(),
-      species: species?.trim() || undefined,
-      breed: breed?.trim() || undefined,
-      gender: gender?.trim() || undefined,
-      photo_url: photo_url?.trim() || undefined,
+      species: species.trim(),
+      breed: breed.trim(),
+      color: color.trim(),
+      gender: gender.trim(),
+      photo_url: photo_url.trim(),
+      size: size.trim(),
+      coat_type: coat_type.trim(),
+      birth_date: birth_date?.trim() || undefined,
+      distinguishing_marks: distinguishing_marks?.trim() || undefined,
     };
 
-    const petId = await createPet(clientNumber, petData);
+    const result = await createPet(clientNumber, petData);
 
-    if (petId) {
-      return `Mascota creada exitosamente con ID: ${petId}. Nombre: ${
-        petData.name
-      }${petData.species ? `, Especie: ${petData.species}` : ""}${
-        petData.breed ? `, Raza: ${petData.breed}` : ""
-      }${petData.gender ? `, Género: ${petData.gender}` : ""}${
-        petData.photo_url ? `, Foto: ${petData.photo_url}` : ""
-      }`;
+    if (result.success) {
+      let successMessage = `✅ ¡Mascota registrada exitosamente!
+
+🐾 **${petData.name}**
+• Especie: ${petData.species}
+• Raza: ${petData.breed}
+• Color: ${petData.color}
+• Género: ${petData.gender}
+• Tamaño: ${petData.size}
+• Pelaje: ${petData.coat_type}
+• Foto: ${petData.photo_url}`;
+
+      if (petData.birth_date) {
+        successMessage += `\n• Fecha de nacimiento: ${petData.birth_date}`;
+      }
+
+      if (petData.distinguishing_marks) {
+        successMessage += `\n• Marcas distintivas: ${petData.distinguishing_marks}`;
+      } else {
+        successMessage += `\n\n⚠️ RECOMENDACIÓN: Considera agregar marcas distintivas únicas (cicatrices, manchas especiales, etc.) usando updatePetTool. Esto aumenta mucho las posibilidades de encontrar a tu mascota si se pierde.`;
+      }
+
+      return successMessage;
     } else {
-      return "Error: No se pudo crear la mascota. Verifique los datos proporcionados.";
+      return `❌ ${result.error?.message || 'Error desconocido al crear la mascota'}`;
     }
   },
   {
     name: "createPetTool",
-    description:
-      "Crea una mascota asociada a un usuario por número de teléfono. Requiere al menos el nombre de la mascota. Los campos especie, raza, género y URL de foto son opcionales. La URL de la foto debe ser una URL válida.",
-    schema: basicPetDataSchema,
+    description: `🆕 ACTUALIZADO: Registra una mascota con TODOS los datos OBLIGATORIOS para maximizar posibilidades de encontrarla si se pierde.
+
+📋 CAMPOS OBLIGATORIOS (NO CREAR SIN ESTOS):
+• name - Nombre de la mascota
+• species - Especie (Perro, Gato, etc.)
+• breed - Raza específica
+• color - Color predominante
+• gender - Género. NORMALIZA: "macho/hembra/masculino/femenino" → "Macho" o "Hembra"
+• photo_url - URL de foto CLARA de la mascota
+• size - Tamaño. NORMALIZA respuestas como "pequeñito/chico/grandote" → "Miniatura", "Pequeño", "Mediano", "Grande" o "Gigante"
+• coat_type - Tipo de pelaje. NORMALIZA: "peludo/sin pelo/cortico" → "Corto", "Medio", "Largo" o "Sin Pelo"
+
+📸 ALTAMENTE RECOMENDADO:
+• distinguishing_marks - Marcas distintivas únicas (cicatrices, manchas, etc.)
+• birth_date - Fecha de nacimiento
+
+⚠️ IMPORTANTE: Interpreta y normaliza las respuestas naturales del usuario a los valores estándar antes de llamar al tool.`,
+    schema: createPetDataSchema,
   }
 );
 
@@ -487,27 +538,53 @@ export const updatePetTool = tool(
   }
 );
 
-// Esquema Zod para crear avistamiento de mascota encontrada (unificado)
+// 🆕 NUEVO SCHEMA con foto OBLIGATORIA y descripción detallada
 const createFoundPetSightingSchema = z.object({
   finderPhone: z.string().min(1, "El número de teléfono de quien encontró la mascota es obligatorio"),
   finderName: z.string().min(1, "El nombre de quien encontró la mascota es obligatorio"),
-  petDescription: z.string().min(1, "La descripción de la mascota encontrada es obligatoria"),
-  locationFound: z.string().min(1, "La ubicación donde se encontró la mascota es obligatoria"),
+  petDescription: z.string().min(20, "⚠️ La descripción debe ser DETALLADA (mínimo 20 caracteres). Incluye: especie, tamaño, color, pelaje, marcas distintivas."),
+  locationFound: z.string().min(10, "La ubicación debe ser específica (mínimo 10 caracteres)"),
   cityFound: z.string().min(1, "La ciudad donde se encontró es OBLIGATORIA"),
   countryFound: z.string().min(1, "El país donde se encontró es OBLIGATORIO"),
-  photoUrl: z.string().url("La URL de la foto debe ser válida").optional(),
-  alertId: z.string().optional(), // Nuevo parámetro opcional para hacer match automático
+  photoUrl: z.string().url("⚠️ La FOTO es OBLIGATORIA y debe ser una URL válida. Sin foto es muy difícil hacer match."), // 🆕 YA NO OPCIONAL
+  alertId: z.string().optional(),
 });
 
 export const createFoundPetSightingTool = tool(
   async ({ finderPhone, finderName, petDescription, locationFound, cityFound, countryFound, photoUrl, alertId }) => {
-    // Validar formato de URL si se proporciona
-    if (photoUrl && photoUrl.trim() !== "") {
-      try {
-        new URL(photoUrl.trim());
-      } catch (error) {
-        return "Error: La URL de la foto no es válida. Debe ser una URL completa (ej: https://ejemplo.com/imagen.jpg).";
-      }
+    
+    // 🆕 VALIDACIÓN ESTRICTA de foto (ya no opcional)
+    if (!photoUrl || photoUrl.trim() === "") {
+      return `❌ ERROR CRÍTICO: La foto de la mascota encontrada es OBLIGATORIA.
+
+📸 Sin foto es casi imposible hacer un match confiable con las mascotas reportadas como perdidas.
+
+Por favor, pide al usuario que tome una foto clara de la mascota y la comparta antes de continuar con el reporte.`;
+    }
+
+    try {
+      new URL(photoUrl.trim());
+    } catch (error) {
+      return "❌ ERROR: La URL de la foto no es válida. Debe ser una URL completa.";
+    }
+
+    // 🆕 VALIDAR que la descripción sea suficientemente detallada
+    const descriptionLower = petDescription.toLowerCase();
+    const hasSpecies = descriptionLower.includes('perro') || descriptionLower.includes('gato') || 
+                       descriptionLower.includes('canino') || descriptionLower.includes('felino');
+    const hasColor = descriptionLower.match(/negro|blanco|café|gris|amarillo|dorado|tricolor|manchas/);
+    const hasSize = descriptionLower.match(/pequeño|mediano|grande|miniatura|gigante|chico|grandote/);
+
+    if (!hasSpecies || !hasColor || !hasSize) {
+      return `⚠️ DESCRIPCIÓN INCOMPLETA. Para un match efectivo, necesito que incluyas:
+
+${!hasSpecies ? '❌ Especie (perro, gato, etc.)' : '✅ Especie'}
+${!hasColor ? '❌ Color predominante' : '✅ Color'}
+${!hasSize ? '❌ Tamaño aproximado' : '✅ Tamaño'}
+
+También incluye si tiene collar, marcas distintivas, tipo de pelaje, etc.
+
+Por favor, proporciona una descripción MÁS DETALLADA antes de continuar.`;
     }
 
     // Combinar ubicación completa incluyendo ciudad y país
@@ -522,14 +599,19 @@ export const createFoundPetSightingTool = tool(
       finderName,
       petDescription,
       fullLocation,
-      photoUrl || undefined,
+      photoUrl.trim(), // Ahora SIEMPRE se envía
       alertId || undefined
     );
 
     if (result) {
       // Si es solo un avistamiento sin match
       if (!result.isMatch) {
-        return `Avistamiento registrado exitosamente en ${cityFound}, ${countryFound}. ID del avistamiento: ${result.sightingId}. Este reporte quedará disponible para futuras alertas que coincidan.`;
+        return `✅ Avistamiento registrado exitosamente en ${cityFound}, ${countryFound}. 
+
+📋 ID del avistamiento: ${result.sightingId}
+📸 Foto incluida: ${photoUrl}
+
+Este reporte quedará disponible para futuras alertas que coincidan. Si hay una mascota reportada como perdida que encaje con esta descripción, el dueño será notificado automáticamente.`;
       }
       
       // Si es un match confirmado
@@ -543,20 +625,20 @@ export const createFoundPetSightingTool = tool(
       }
       
       const detailedMessage = `
-¡MASCOTA ENCONTRADA Y MATCH CONFIRMADO! 
+🎉 ¡MASCOTA ENCONTRADA Y MATCH CONFIRMADO! 
 
 ${result.pet.name} (${result.pet.species || 'mascota'} ${result.pet.breed || ''}) ha sido encontrada.
 
-DUEÑO:
+👤 DUEÑO:
 - Nombre: ${result.owner.name}
 - Teléfono: ${result.owner.phone}
 
-PERSONA QUE LA ENCONTRÓ:
+🔍 PERSONA QUE LA ENCONTRÓ:
 - Nombre: ${result.finder.name}  
 - Teléfono: ${result.finder.phone}
 - Ubicación: ${result.finder.location}
 - Descripción: ${result.finder.description}
-${result.finder.photoUrl ? `- Foto: ${result.finder.photoUrl}` : ''}
+- Foto: ${result.finder.photoUrl}
 
 📱 Estado de notificación: ${notificationStatus}
 
@@ -565,13 +647,28 @@ El match ha sido confirmado automáticamente y ambas partes pueden contactarse d
 
       return detailedMessage;
     } else {
-      return "Error: No se pudo registrar el avistamiento de la mascota encontrada. Verifique los datos proporcionados.";
+      return "❌ Error: No se pudo registrar el avistamiento de la mascota encontrada. Verifique los datos proporcionados.";
     }
   },
   {
     name: "createFoundPetSightingTool",
-    description:
-      "Herramienta UNIFICADA para registrar avistamientos de mascotas encontradas. Puede funcionar de dos formas: 1) Sin alertId: Solo registra el avistamiento para futuras coincidencias. 2) Con alertId: Registra + confirma match + envía notificación automáticamente. Requiere información de contacto, descripción, ubicación, ciudad y país. Opcionalmente foto y alertId para match automático.",
+    description: `🆕 ACTUALIZADO: Registra avistamientos de mascotas encontradas con DATOS OBLIGATORIOS para match efectivo.
+
+📋 CAMPOS OBLIGATORIOS:
+• finderPhone - Teléfono de quien encontró
+• finderName - Nombre de quien encontró
+• petDescription - Descripción DETALLADA (mínimo 20 caracteres) que DEBE incluir:
+  - Especie (perro, gato, etc.)
+  - Color predominante
+  - Tamaño aproximado
+  - Tipo de pelaje si es visible
+  - Marcas distintivas (collar, manchas, cicatrices, etc.)
+• locationFound - Ubicación específica
+• cityFound - Ciudad
+• countryFound - País
+• photoUrl - FOTO CLARA de la mascota (YA NO ES OPCIONAL)
+
+⚠️ Sin foto y descripción detallada, el match es casi imposible.`,
     schema: createFoundPetSightingSchema,
   }
 );

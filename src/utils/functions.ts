@@ -323,6 +323,8 @@ interface PetData {
   gender?: string;
   photo_url?: string;
   distinguishing_marks?: string;
+  size?: string; // 🆕 Tamaño: Miniatura, Pequeño, Mediano, Grande, Gigante
+  coat_type?: string; // 🆕 Tipo de pelaje: Corto, Medio, Largo, Sin Pelo
 }
 
 // Interfaz para datos de alerta de mascota perdida
@@ -590,15 +592,41 @@ export async function createPet(
   petData: PetData
 ): Promise<CreatePetResult> {
   try {
-    // Validar datos mínimos requeridos
-    if (!petData.name || petData.name.trim() === "") {
+    // 🆕 VALIDACIÓN ESTRICTA DE CAMPOS OBLIGATORIOS
+    const missingFields: string[] = [];
+    
+    if (!petData.name?.trim()) missingFields.push("nombre");
+    if (!petData.species?.trim()) missingFields.push("especie (Perro, Gato, etc.)");
+    if (!petData.breed?.trim()) missingFields.push("raza específica");
+    if (!petData.color?.trim()) missingFields.push("color predominante");
+    if (!petData.gender?.trim()) missingFields.push("género (Macho/Hembra)");
+    if (!petData.photo_url?.trim()) missingFields.push("foto clara de la mascota");
+    if (!petData.size?.trim()) missingFields.push("tamaño (Miniatura, Pequeño, Mediano, Grande, Gigante)");
+    if (!petData.coat_type?.trim()) missingFields.push("tipo de pelaje (Corto, Medio, Largo, Sin Pelo)");
+
+    if (missingFields.length > 0) {
       return {
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: "El nombre de la mascota es obligatorio"
+          message: `⚠️ DATOS OBLIGATORIOS FALTANTES: ${missingFields.join(", ")}
+
+🔍 Estos datos son CRÍTICOS para poder encontrar tu mascota si se pierde. 
+
+📸 Especialmente la FOTO y las MARCAS DISTINTIVAS son fundamentales para que otros usuarios puedan identificar a tu mascota.
+
+Por favor, proporciona TODOS estos datos antes de continuar.`
         }
       };
+    }
+
+    // 🆕 Los campos ya fueron validados como presentes arriba
+    // La IA normalizará los valores según el prompt (ej: "pequeñito" → "Pequeño")
+
+    // 🆕 RECOMENDACIÓN FUERTE de distinguishing_marks
+    if (!petData.distinguishing_marks || petData.distinguishing_marks.trim() === "") {
+      console.log(`⚠️ ADVERTENCIA: Mascota sin marcas distintivas especificadas`);
+      // No bloquear, pero loguear para advertir al usuario después
     }
 
     // --- VALIDACIÓN DE SUSCRIPCIÓN ---
@@ -688,24 +716,30 @@ export async function createPet(
       .insert({
         owner_id: profileId,
         name: petData.name.trim(),
-        species: petData.species?.trim() || null,
-        breed: petData.breed?.trim() || null,
-        color: petData.color?.trim() || null,
+        species: petData.species!.trim(),
+        breed: petData.breed!.trim(),
+        color: petData.color!.trim(),
         birth_date: petData.birth_date || null,
-        gender: petData.gender?.trim() || null,
-        photo_url: petData.photo_url?.trim() || null,
+        gender: petData.gender!.trim(),
+        photo_url: petData.photo_url!.trim(),
         distinguishing_marks: petData.distinguishing_marks?.trim() || null,
+        size: petData.size!.trim(),
+        coat_type: petData.coat_type!.trim(),
         is_currently_lost: false,
       })
       .select("id")
       .single();
 
     if (petError) {
+      console.error("❌ ERROR COMPLETO AL CREAR MASCOTA:", JSON.stringify(petError, null, 2));
+      console.error("❌ Detalles del error:", petError.message);
+      console.error("❌ Código del error:", petError.code);
+      console.error("❌ Detalles adicionales:", petError.details);
       return {
         success: false,
         error: {
           code: 'DATABASE_ERROR',
-          message: `Error creando la mascota: ${petError.message}`
+          message: `Error creando la mascota: ${petError.message} | Código: ${petError.code} | Detalles: ${petError.details}`
         }
       };
     }
