@@ -218,74 +218,68 @@ export function getAvailablePlans() {
     });
 }
 /**
- * Función para validar si un usuario puede registrar una nueva mascota según su plan
+ * Función para validar si un usuario puede registrar una nueva mascota según sus planes activos
+ * ACTUALIZADA: Suma los límites de TODAS las suscripciones activas del usuario
  * @param phoneNumber El número de teléfono del usuario
  * @returns Objeto con resultado de la validación
  */
 export function validatePetLimit(phoneNumber) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            // Obtener información de suscripción del usuario
+            console.log(`🔢 Validando límite de mascotas para ${phoneNumber}...`);
+            // Obtener información de suscripciones del usuario (ya incluye conteo de mascotas)
             const subscriptionStatus = yield hasActiveSubscription(phoneNumber);
             if (!subscriptionStatus.active || !subscriptionStatus.profile) {
                 return {
                     canRegister: false,
                     currentPetCount: 0,
                     planLimit: 0,
+                    totalPetLimit: 0,
                     planName: "Sin suscripción",
-                    reason: "No tiene suscripción activa"
+                    activeSubscriptions: [],
+                    reason: "Debes suscribirte para poder registrar mascotas"
                 };
             }
-            // Obtener información del plan
-            let planInfo = null;
-            if (subscriptionStatus.profile.plan_id) {
-                planInfo = yield getPlanDetails(subscriptionStatus.profile.plan_id);
-            }
-            // Si no tiene plan asignado o el plan no existe, usar límite por defecto (manejo de casos legacy)
-            if (!planInfo) {
+            // Si no hay suscripciones activas
+            if (subscriptionStatus.subscriptions.length === 0) {
                 return {
                     canRegister: false,
-                    currentPetCount: 0,
+                    currentPetCount: subscriptionStatus.currentPetCount,
                     planLimit: 0,
-                    planName: "Plan no válido",
-                    reason: "El plan de suscripción no es válido o no existe"
+                    totalPetLimit: 0,
+                    planName: "Sin plan activo",
+                    activeSubscriptions: [],
+                    reason: "No tienes ninguna suscripción activa"
                 };
             }
-            // Contar mascotas actuales del usuario
-            const { data: pets, error: petsError } = yield supabase
-                .from("pets")
-                .select("id")
-                .eq("owner_id", subscriptionStatus.profile.id);
-            if (petsError) {
-                console.error("Error contando mascotas:", petsError);
-                return {
-                    canRegister: false,
-                    currentPetCount: 0,
-                    planLimit: planInfo.pet_limit,
-                    planName: planInfo.name,
-                    reason: "Error consultando mascotas registradas"
-                };
-            }
-            const currentPetCount = (pets === null || pets === void 0 ? void 0 : pets.length) || 0;
-            const canRegister = currentPetCount < planInfo.pet_limit;
-            // Manejar caso especial de Plan Gran Manada Premium (999 = ilimitado)
-            const isUnlimited = planInfo.pet_limit >= 999;
-            const displayLimit = isUnlimited ? "ilimitadas" : planInfo.pet_limit.toString();
+            // Usar los datos ya calculados por hasActiveSubscription
+            const currentPetCount = subscriptionStatus.currentPetCount;
+            const totalPetLimit = subscriptionStatus.totalPetLimit;
+            const activeSubscriptions = subscriptionStatus.subscriptions;
+            // Verificar si puede registrar más mascotas
+            const canRegister = currentPetCount < totalPetLimit;
+            // Manejar caso especial de planes ilimitados (999 = ilimitado)
+            const hasUnlimitedPlan = activeSubscriptions.some(sub => { var _a; return (((_a = sub.plan) === null || _a === void 0 ? void 0 : _a.pet_limit) || 0) >= 999; });
+            // Crear descripción de planes activos
+            const plansDescription = activeSubscriptions.map(sub => { var _a, _b, _c; return `${((_a = sub.plan) === null || _a === void 0 ? void 0 : _a.name) || 'Plan desconocido'} (${((_b = sub.plan) === null || _b === void 0 ? void 0 : _b.pet_limit) || 0} ${(((_c = sub.plan) === null || _c === void 0 ? void 0 : _c.pet_limit) || 0) >= 999 ? 'ilimitadas' : 'mascotas'})`; }).join(', ');
             let reason;
-            if (isUnlimited) {
-                reason = `Plan ${planInfo.name} permite mascotas ilimitadas. Actualmente tienes ${currentPetCount} registradas.`;
+            if (hasUnlimitedPlan) {
+                reason = `Tienes plan(es) con mascotas ilimitadas: ${plansDescription}. Mascotas registradas: ${currentPetCount}`;
             }
             else if (canRegister) {
-                reason = `Puede registrar ${planInfo.pet_limit - currentPetCount} mascota(s) más`;
+                reason = `Puedes registrar más mascotas. Tienes ${currentPetCount} de ${totalPetLimit} permitidas en tus planes: ${plansDescription}`;
             }
             else {
-                reason = `Ha alcanzado el límite de ${planInfo.pet_limit} mascota(s) de su ${planInfo.name}. Debe esperar a que termine su suscripción para cambiar de plan.`;
+                reason = `Has alcanzado el límite de ${totalPetLimit} mascotas de tus planes activos: ${plansDescription}`;
             }
+            console.log(`📊 Validación: ${currentPetCount}/${totalPetLimit} mascotas. Puede registrar: ${hasUnlimitedPlan || canRegister}`);
             return {
-                canRegister: isUnlimited ? true : canRegister,
+                canRegister: hasUnlimitedPlan ? true : canRegister,
                 currentPetCount,
-                planLimit: planInfo.pet_limit,
-                planName: planInfo.name,
+                planLimit: totalPetLimit, // Para compatibilidad con código existente
+                totalPetLimit,
+                planName: plansDescription,
+                activeSubscriptions,
                 reason
             };
         }
@@ -295,16 +289,20 @@ export function validatePetLimit(phoneNumber) {
                 canRegister: false,
                 currentPetCount: 0,
                 planLimit: 0,
+                totalPetLimit: 0,
                 planName: "Error",
+                activeSubscriptions: [],
                 reason: "Error interno al validar límites"
             };
         }
     });
 }
 /**
- * Función para validar si un usuario tiene una suscripción activa
+ * Función para validar si un usuario tiene suscripciones activas
+ * ACTUALIZADA: Ahora soporta múltiples suscripciones simultáneas desde user_subscriptions
+ * Los límites de mascotas se SUMAN de todas las suscripciones activas
  * @param phoneNumber El número de teléfono del usuario
- * @returns Objeto con estado de suscripción y detalles
+ * @returns Objeto con estado de suscripciones, límites totales y detalles
  */
 export function hasActiveSubscription(phoneNumber) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -320,6 +318,9 @@ export function hasActiveSubscription(phoneNumber) {
                     active: false,
                     status: 'none',
                     reason: `Error consultando perfil: ${profileError.message}`,
+                    subscriptions: [],
+                    totalPetLimit: 0,
+                    currentPetCount: 0,
                     profile: null
                 };
             }
@@ -329,61 +330,94 @@ export function hasActiveSubscription(phoneNumber) {
                     active: false,
                     status: 'none',
                     reason: 'Perfil no encontrado - necesita registrarse y suscribirse',
+                    subscriptions: [],
+                    totalPetLimit: 0,
+                    currentPetCount: 0,
                     profile: null
                 };
             }
-            // Si no es suscriptor
-            if (!profile.is_subscriber) {
-                return {
-                    active: false,
-                    status: 'none',
-                    reason: 'No tiene suscripción activa - debe adquirir plan de $26.000 anuales',
-                    profile: profile
-                };
-            }
-            // Si es suscriptor pero faltan fechas (inconsistencia de datos)
-            if (!profile.subscription_activated_at || !profile.subscription_expires_at) {
-                return {
-                    active: false,
-                    status: 'none',
-                    reason: 'Suscripción incompleta - contacte soporte para activar',
-                    profile: profile
-                };
-            }
-            // Validar si la suscripción está vigente
+            // --- NUEVO ENFOQUE: Consultar user_subscriptions ---
+            console.log(`🔍 Consultando suscripciones desde user_subscriptions...`);
             const now = new Date();
-            const expiresAt = new Date(profile.subscription_expires_at);
-            // Obtener información del plan si existe
-            let planInfo = null;
-            if (profile.plan_id) {
-                const planDetails = yield getPlanDetails(profile.plan_id);
-                if (planDetails) {
-                    planInfo = {
-                        id: planDetails.id,
-                        name: planDetails.name,
-                        price: planDetails.price,
-                        pet_limit: planDetails.pet_limit
-                    };
-                }
-            }
-            if (now >= expiresAt) {
+            const { data: userSubscriptions, error: subscriptionsError } = yield supabase
+                .from("user_subscriptions")
+                .select(`
+        id,
+        user_id,
+        plan_id,
+        subscription_status,
+        activated_at,
+        expires_at,
+        created_at,
+        plans:plan_id (
+          name,
+          price,
+          pet_limit,
+          duration_months
+        )
+      `)
+                .eq("user_id", profile.id)
+                .eq("subscription_status", "active")
+                .gte("expires_at", now.toISOString())
+                .order("expires_at", { ascending: false });
+            if (subscriptionsError) {
+                console.error("Error consultando suscripciones:", subscriptionsError);
                 return {
                     active: false,
-                    status: 'expired',
-                    reason: `Suscripción expiró el ${expiresAt.toLocaleDateString('es-CO')} - renueve para continuar`,
-                    profile: profile,
-                    expiresAt: profile.subscription_expires_at,
-                    plan: planInfo
+                    status: 'none',
+                    reason: `Error técnico consultando suscripciones: ${subscriptionsError.message}`,
+                    subscriptions: [],
+                    totalPetLimit: 0,
+                    currentPetCount: 0,
+                    profile: profile
                 };
             }
+            // Si no hay suscripciones activas en user_subscriptions
+            if (!userSubscriptions || userSubscriptions.length === 0) {
+                console.log(`❌ No se encontraron suscripciones activas para ${phoneNumber}`);
+                return {
+                    active: false,
+                    status: 'none',
+                    reason: 'No tiene suscripción activa - debe adquirir un plan',
+                    subscriptions: [],
+                    totalPetLimit: 0,
+                    currentPetCount: 0,
+                    profile: profile
+                };
+            }
+            // Transformar suscripciones con datos del plan
+            const activeSubscriptions = userSubscriptions.map((sub) => ({
+                id: sub.id,
+                user_id: sub.user_id,
+                plan_id: sub.plan_id,
+                subscription_status: sub.subscription_status,
+                activated_at: sub.activated_at,
+                expires_at: sub.expires_at,
+                created_at: sub.created_at,
+                plan: Array.isArray(sub.plans) ? sub.plans[0] : sub.plans
+            }));
+            // SUMAR los límites de mascotas de TODAS las suscripciones activas
+            const totalPetLimit = activeSubscriptions.reduce((sum, sub) => {
+                var _a;
+                return sum + (((_a = sub.plan) === null || _a === void 0 ? void 0 : _a.pet_limit) || 0);
+            }, 0);
+            // Contar mascotas actuales del usuario
+            const { data: pets, error: petsError } = yield supabase
+                .from("pets")
+                .select("id")
+                .eq("owner_id", profile.id);
+            const currentPetCount = (pets === null || pets === void 0 ? void 0 : pets.length) || 0;
+            console.log(`✅ Usuario tiene ${activeSubscriptions.length} suscripción(es) activa(s)`);
+            console.log(`📊 Límite total de mascotas: ${totalPetLimit} | Mascotas registradas: ${currentPetCount}`);
             // Suscripción activa
             return {
                 active: true,
                 status: 'active',
-                reason: `Suscripción activa hasta ${expiresAt.toLocaleDateString('es-CO')}`,
-                profile: profile,
-                expiresAt: profile.subscription_expires_at,
-                plan: planInfo
+                reason: `${activeSubscriptions.length} suscripción(es) activa(s). Límite total: ${totalPetLimit} mascotas`,
+                subscriptions: activeSubscriptions,
+                totalPetLimit,
+                currentPetCount,
+                profile: profile
             };
         }
         catch (error) {
@@ -392,6 +426,9 @@ export function hasActiveSubscription(phoneNumber) {
                 active: false,
                 status: 'none',
                 reason: `Error técnico validando suscripción: ${error}`,
+                subscriptions: [],
+                totalPetLimit: 0,
+                currentPetCount: 0,
                 profile: null
             };
         }
@@ -406,17 +443,47 @@ export function hasActiveSubscription(phoneNumber) {
  */
 export function createPet(clientNumber, petData) {
     return __awaiter(this, void 0, void 0, function* () {
-        var _a, _b, _c, _d, _e, _f;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j;
         try {
-            // Validar datos mínimos requeridos
-            if (!petData.name || petData.name.trim() === "") {
+            // 🆕 VALIDACIÓN ESTRICTA DE CAMPOS OBLIGATORIOS
+            const missingFields = [];
+            if (!((_a = petData.name) === null || _a === void 0 ? void 0 : _a.trim()))
+                missingFields.push("nombre");
+            if (!((_b = petData.species) === null || _b === void 0 ? void 0 : _b.trim()))
+                missingFields.push("especie (Perro, Gato, etc.)");
+            if (!((_c = petData.breed) === null || _c === void 0 ? void 0 : _c.trim()))
+                missingFields.push("raza específica");
+            if (!((_d = petData.color) === null || _d === void 0 ? void 0 : _d.trim()))
+                missingFields.push("color predominante");
+            if (!((_e = petData.gender) === null || _e === void 0 ? void 0 : _e.trim()))
+                missingFields.push("género (Macho/Hembra)");
+            if (!((_f = petData.photo_url) === null || _f === void 0 ? void 0 : _f.trim()))
+                missingFields.push("foto clara de la mascota");
+            if (!((_g = petData.size) === null || _g === void 0 ? void 0 : _g.trim()))
+                missingFields.push("tamaño (Miniatura, Pequeño, Mediano, Grande, Gigante)");
+            if (!((_h = petData.coat_type) === null || _h === void 0 ? void 0 : _h.trim()))
+                missingFields.push("tipo de pelaje (Corto, Medio, Largo, Sin Pelo)");
+            if (missingFields.length > 0) {
                 return {
                     success: false,
                     error: {
                         code: 'VALIDATION_ERROR',
-                        message: "El nombre de la mascota es obligatorio"
+                        message: `⚠️ DATOS OBLIGATORIOS FALTANTES: ${missingFields.join(", ")}
+
+🔍 Estos datos son CRÍTICOS para poder encontrar tu mascota si se pierde. 
+
+📸 Especialmente la FOTO y las MARCAS DISTINTIVAS son fundamentales para que otros usuarios puedan identificar a tu mascota.
+
+Por favor, proporciona TODOS estos datos antes de continuar.`
                     }
                 };
+            }
+            // 🆕 Los campos ya fueron validados como presentes arriba
+            // La IA normalizará los valores según el prompt (ej: "pequeñito" → "Pequeño")
+            // 🆕 RECOMENDACIÓN FUERTE de distinguishing_marks
+            if (!petData.distinguishing_marks || petData.distinguishing_marks.trim() === "") {
+                console.log(`⚠️ ADVERTENCIA: Mascota sin marcas distintivas especificadas`);
+                // No bloquear, pero loguear para advertir al usuario después
             }
             // --- VALIDACIÓN DE SUSCRIPCIÓN ---
             console.log(`🔐 Validando suscripción para ${clientNumber}...`);
@@ -494,23 +561,29 @@ export function createPet(clientNumber, petData) {
                 .insert({
                 owner_id: profileId,
                 name: petData.name.trim(),
-                species: ((_a = petData.species) === null || _a === void 0 ? void 0 : _a.trim()) || null,
-                breed: ((_b = petData.breed) === null || _b === void 0 ? void 0 : _b.trim()) || null,
-                color: ((_c = petData.color) === null || _c === void 0 ? void 0 : _c.trim()) || null,
+                species: petData.species.trim(),
+                breed: petData.breed.trim(),
+                color: petData.color.trim(),
                 birth_date: petData.birth_date || null,
-                gender: ((_d = petData.gender) === null || _d === void 0 ? void 0 : _d.trim()) || null,
-                photo_url: ((_e = petData.photo_url) === null || _e === void 0 ? void 0 : _e.trim()) || null,
-                distinguishing_marks: ((_f = petData.distinguishing_marks) === null || _f === void 0 ? void 0 : _f.trim()) || null,
+                gender: petData.gender.trim(),
+                photo_url: petData.photo_url.trim(),
+                distinguishing_marks: ((_j = petData.distinguishing_marks) === null || _j === void 0 ? void 0 : _j.trim()) || null,
+                size: petData.size.trim(),
+                coat_type: petData.coat_type.trim(),
                 is_currently_lost: false,
             })
                 .select("id")
                 .single();
             if (petError) {
+                console.error("❌ ERROR COMPLETO AL CREAR MASCOTA:", JSON.stringify(petError, null, 2));
+                console.error("❌ Detalles del error:", petError.message);
+                console.error("❌ Código del error:", petError.code);
+                console.error("❌ Detalles adicionales:", petError.details);
                 return {
                     success: false,
                     error: {
                         code: 'DATABASE_ERROR',
-                        message: `Error creando la mascota: ${petError.message}`
+                        message: `Error creando la mascota: ${petError.message} | Código: ${petError.code} | Detalles: ${petError.details}`
                     }
                 };
             }
@@ -1634,7 +1707,8 @@ export function initiateSubscriptionProcess(phoneNumber, planId) {
 }
 /**
  * Función auxiliar para activar automáticamente una suscripción
- * Lee el plan_id del perfil y activa la suscripción inmediatamente
+ * ACTUALIZADA: Crea registro en user_subscriptions en lugar de actualizar profiles
+ * Lee el plan_id del perfil y crea una nueva suscripción activa
  * @param phoneNumber El número de teléfono del usuario
  * @returns Objeto con resultado de la activación
  */
@@ -1676,18 +1750,30 @@ export function activateSubscriptionAutomatically(phoneNumber) {
             const activatedAt = now.toISOString();
             const expiresAt = new Date(now.getTime() + (planDetails.duration_months * 30 * 24 * 60 * 60 * 1000));
             const expiresAtISO = expiresAt.toISOString();
-            // Activar la suscripción
-            const { error: updateError } = yield supabase
-                .from("profiles")
-                .update({
-                is_subscriber: true,
-                subscription_activated_at: activatedAt,
-                subscription_expires_at: expiresAtISO,
-                subscription_status: "active"
+            // CREAR REGISTRO EN user_subscriptions (NUEVO ENFOQUE)
+            const { data: newSubscription, error: subscriptionError } = yield supabase
+                .from("user_subscriptions")
+                .insert({
+                user_id: profile.id,
+                plan_id: planDetails.id,
+                subscription_status: "active",
+                activated_at: activatedAt,
+                expires_at: expiresAtISO
             })
-                .eq("phone_number", phoneNumber);
-            if (updateError) {
-                throw new Error(`Error activando suscripción: ${updateError.message}`);
+                .select()
+                .single();
+            if (subscriptionError) {
+                throw new Error(`Error creando suscripción: ${subscriptionError.message}`);
+            }
+            console.log(`✅ Suscripción creada en user_subscriptions: ID ${newSubscription.id}`);
+            // Actualizar is_subscriber en profiles (para indicador rápido)
+            const { error: updateProfileError } = yield supabase
+                .from("profiles")
+                .update({ is_subscriber: true })
+                .eq("id", profile.id);
+            if (updateProfileError) {
+                console.error("⚠️ Error actualizando is_subscriber en profile:", updateProfileError);
+                // No fallar si esto falla, la suscripción ya fue creada
             }
             console.log(`✅ Suscripción activada exitosamente: ${planDetails.name} hasta ${expiresAt.toLocaleDateString('es-CO')}`);
             return {
