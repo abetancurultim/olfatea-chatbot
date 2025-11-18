@@ -148,7 +148,13 @@ export function findPlanByName(planName) {
                 'gran manada premium': 'Plan Gran Manada Premium',
                 'plan gran manada premium': 'Plan Gran Manada Premium',
                 'premium': 'Plan Gran Manada Premium',
-                '5': 'Plan Gran Manada Premium'
+                '5': 'Plan Gran Manada Premium',
+                // Plan Inmediato (Emergencia)
+                'inmediato': 'Plan Inmediato',
+                'plan inmediato': 'Plan Inmediato',
+                'emergencia': 'Plan Inmediato',
+                'plan emergencia': 'Plan Inmediato',
+                'plan de emergencia': 'Plan Inmediato'
             };
             // Verificar si hay un mapeo directo
             const mappedName = planNameMapping[normalizedPlanName];
