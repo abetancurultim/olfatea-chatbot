@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { v4 as uuidv4 } from "uuid";
 import axios from "axios";
 import twilio from "twilio";
+import { MARKETING_CONFIG } from "../config/constants.js";
 // Import colombia.json file
 
 dotenv.config();
@@ -21,6 +22,27 @@ export const supabase = createClient(supabaseUrl, supabaseKey);
 function isValidUUID(uuid: string): boolean {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return uuidRegex.test(uuid);
+}
+
+/**
+ * Extrae el patch URL de una URL completa de Firebase Storage
+ * @param fullUrl URL completa de Firebase Storage
+ * @returns Patch URL (parte después de /o/)
+ */
+function extractPatchUrlFromFirebase(fullUrl: string): string {
+  try {
+    const url = new URL(fullUrl);
+    const pathParts = url.pathname.split('/o/');
+    if (pathParts.length < 2) {
+      throw new Error('URL de Firebase inválida - no contiene /o/');
+    }
+    // Incluir 'o/' al inicio + query params (token, alt=media) - Formato requerido por Twilio
+    const patchUrl = 'o/' + pathParts[1] + url.search;
+    return patchUrl;
+  } catch (error) {
+    console.error('Error extrayendo patch URL:', error);
+    throw new Error('La URL de la foto no tiene el formato esperado de Firebase Storage');
+  }
 }
 
 /*
@@ -207,8 +229,35 @@ export async function findPlanByName(planName: string): Promise<Plan | null> {
 }
 
 /**
- * Función para obtener todos los planes disponibles
- * @returns Array con todos los planes activos ordenados por precio
+ * Función para calcular precio de marketing con descuentos
+ * @param planName Nombre del plan
+ * @param realPrice Precio real del plan
+ * @returns Objeto con información de marketing del precio
+ */
+export function getMarketingPrice(planName: string, realPrice: number) {
+  if (MARKETING_CONFIG.DISCOUNTED_PLANS.includes(planName)) {
+    const marketingPrice = MARKETING_CONFIG.MARKETING_PRICES[planName as keyof typeof MARKETING_CONFIG.MARKETING_PRICES];
+    const discount = marketingPrice - realPrice;
+    return {
+      hasDiscount: true,
+      marketingPrice,
+      realPrice,
+      discount,
+      discountPercentage: MARKETING_CONFIG.DISCOUNT_PERCENTAGE
+    };
+  }
+  return {
+    hasDiscount: false,
+    marketingPrice: realPrice,
+    realPrice,
+    discount: 0,
+    discountPercentage: 0
+  };
+}
+
+/**
+ * Función para obtener todos los planes disponibles con información de marketing
+ * @returns Array con todos los planes activos ordenados por precio, incluyendo info de descuentos
  */
 export async function getAvailablePlans(): Promise<Plan[]> {
   try {
@@ -223,7 +272,19 @@ export async function getAvailablePlans(): Promise<Plan[]> {
       return [];
     }
 
-    return plans || [];
+    // Agregar información de marketing a cada plan
+    const plansWithMarketing = (plans || []).map(plan => {
+      const marketingInfo = getMarketingPrice(plan.name, plan.price);
+      return {
+        ...plan,
+        marketingPrice: marketingInfo.marketingPrice,
+        hasDiscount: marketingInfo.hasDiscount,
+        discount: marketingInfo.discount,
+        discountPercentage: marketingInfo.discountPercentage
+      };
+    });
+
+    return plansWithMarketing;
   } catch (error) {
     console.error("Error en getAvailablePlans:", error);
     return [];
@@ -1524,6 +1585,11 @@ export async function createFoundPetSighting(
   try {
     console.log(`🔍 Creando avistamiento para finder: ${finderName} (${finderPhone})`);
 
+    // 🆕 VALIDACIÓN OBLIGATORIA DE FOTO
+    if (!photoUrl || photoUrl.trim() === "") {
+      throw new Error("❌ La foto de la mascota encontrada es OBLIGATORIA. Por favor, solicita al usuario que tome y envíe una foto clara de la mascota antes de continuar.");
+    }
+
     // Crear el avistamiento directamente con nombre y teléfono del finder
     const { data: newSighting, error: sightingError } = await supabase
       .from("sightings")
@@ -1534,7 +1600,7 @@ export async function createFoundPetSighting(
         sighted_at: new Date().toISOString(),
         location_description: locationFound.trim(),
         comment: petDescription.trim(),
-        photo_url: photoUrl?.trim() || null,
+        photo_url: photoUrl.trim(), // Ahora siempre presente
         created_at: new Date().toISOString(),
       })
       .select("id")
@@ -1632,7 +1698,8 @@ export async function createFoundPetSighting(
           ownerData.full_name || 'Propietario',
           petData.name,
           finderName,
-          finderPhone
+          finderPhone,
+          photoUrl // Ahora obligatorio
         );
         
         result.notificationSent = true;
@@ -1777,12 +1844,18 @@ export async function confirmPetMatch(
     try {
       console.log(`📱 Enviando notificación automática a ${ownerData.phone_number}...`);
       
+      // Validar que exista foto antes de enviar
+      if (!sightingData.photo_url) {
+        throw new Error("No se puede enviar notificación sin foto de la mascota encontrada");
+      }
+      
       await sendPetSightingNotification(
         ownerData.phone_number,
         ownerData.full_name || 'Propietario',
         petData.name,
         sightingData.name,
-        sightingData.phone
+        sightingData.phone,
+        sightingData.photo_url // Ahora obligatorio
       );
       
       matchResult.notificationSent = true;
@@ -1807,45 +1880,54 @@ export async function confirmPetMatch(
  * @param ownerPhone Número de teléfono del dueño de la mascota
  * @param ownerName Nombre del dueño de la mascota
  * @param petName Nombre de la mascota
- * @param finderName Nombre de la persona que encontró la mascota (opcional para template actual)
- * @param finderPhone Teléfono de la persona que encontró la mascota (opcional para template actual)
+ * @param finderName Nombre de la persona que encontró la mascota
+ * @param finderPhone Teléfono de la persona que encontró la mascota
+ * @param photoUrl URL de la foto de la mascota encontrada (OBLIGATORIO)
  * @returns void
  */
 export const sendPetSightingNotification = async (
   ownerPhone: string,
   ownerName: string,
   petName: string,
-  finderName?: string,
-  finderPhone?: string
+  finderName: string,
+  finderPhone: string,
+  photoUrl: string
 ): Promise<void> => {
   try {
+    // Validar que la foto sea obligatoria
+    if (!photoUrl || photoUrl.trim() === "") {
+      throw new Error("La foto de la mascota encontrada es obligatoria para enviar la notificación");
+    }
+
     const templateUrl = "https://ultim.online/olfatea/send-template";
     const testTemplateUrl = "http://localhost:3025/olfatea/send-template";
 
-    // Template provisional - solo requiere nombre del dueño y nombre de la mascota
-    const templateId = "HX925527e9fa187c02fe52e1203ea54108";
+    // Nuevo template con foto incluida
+    const templateId = "HX9c9550cf8b2b2173871f1e9b46e022de";
+
+    // Extraer el patch URL de la foto completa de Firebase (formato: o/images%2F...)
+    const photoPatchUrl = extractPatchUrlFromFirebase(photoUrl);
+    console.log(`📸 Foto patch URL extraído: ${photoPatchUrl}`);
 
     const requestData = {
       to: ownerPhone,
       templateId: templateId,
       ownerName: ownerName || "Dueño",
       petName: petName || "Mascota",
-      // Datos del finder son opcionales en el template actual
       finderName: finderName || "Alguien",
       finderPhone: finderPhone || "No proporcionado",
-      // twilioPhoneNumber: "+14707406662" // Número de Twilio de prueba
+      photoPatchUrl: photoPatchUrl, // Patch URL con formato o/images%2F...
       twilioPhoneNumber: "+573052227183" // Prioridad a producción
     };
 
-    // Si se proporcionan datos del finder, los incluimos para futuro uso
-    if (finderName && finderPhone) {
-      console.log(`📝 Datos del finder disponibles: ${finderName} (${finderPhone}) - Listos para nuevo template`);
-    }
+    console.log(`📝 Enviando notificación con foto a ${ownerPhone}`);
+    console.log(`📸 Finder: ${finderName} (${finderPhone})`);
 
     const response = await axios.post(templateUrl, requestData);
 
     console.log(`✅ Notificación de avistamiento enviada exitosamente a ${ownerPhone}:`, response.data);
     console.log(`📱 Template usado: ${templateId} - Dueño: ${ownerName}, Mascota: ${petName}`);
+    console.log(`📸 Foto incluida en template: ${photoPatchUrl}`);
   } catch (error: any) {
     if (error.response) {
       console.error(`❌ Error enviando notificación de avistamiento:`, error.response.data);

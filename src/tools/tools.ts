@@ -17,6 +17,7 @@ import {
   getAvailablePlans,
   validatePetLimit,
   findPlanByName, // Nueva función para buscar planes por nombre
+  getMarketingPrice, // Nueva función para precios de marketing
   // ------
   searchLostPetsFTS,
   // Nuevas funciones de suscripción
@@ -553,11 +554,13 @@ const createFoundPetSightingSchema = z.object({
 export const createFoundPetSightingTool = tool(
   async ({ finderPhone, finderName, petDescription, locationFound, cityFound, countryFound, photoUrl, alertId }) => {
     
-    // 🆕 VALIDACIÓN ESTRICTA de foto (ya no opcional)
+    // 🆕 VALIDACIÓN ESTRICTA de foto (OBLIGATORIA según nueva política)
     if (!photoUrl || photoUrl.trim() === "") {
       return `❌ ERROR CRÍTICO: La foto de la mascota encontrada es OBLIGATORIA.
 
-📸 Sin foto es casi imposible hacer un match confiable con las mascotas reportadas como perdidas.
+📸 NUEVA POLÍTICA: Es obligatorio tomar y enviar una foto clara de la mascota encontrada para poder notificar al posible dueño.
+
+🎯 La foto se enviará automáticamente al dueño dentro del mensaje de WhatsApp para confirmar que es su mascota.
 
 Por favor, pide al usuario que tome una foto clara de la mascota y la comparta antes de continuar con el reporte.`;
     }
@@ -566,25 +569,6 @@ Por favor, pide al usuario que tome una foto clara de la mascota y la comparta a
       new URL(photoUrl.trim());
     } catch (error) {
       return "❌ ERROR: La URL de la foto no es válida. Debe ser una URL completa.";
-    }
-
-    // 🆕 VALIDAR que la descripción sea suficientemente detallada
-    const descriptionLower = petDescription.toLowerCase();
-    const hasSpecies = descriptionLower.includes('perro') || descriptionLower.includes('gato') || 
-                       descriptionLower.includes('canino') || descriptionLower.includes('felino');
-    const hasColor = descriptionLower.match(/negro|blanco|café|gris|amarillo|dorado|tricolor|manchas/);
-    const hasSize = descriptionLower.match(/pequeño|mediano|grande|miniatura|gigante|chico|grandote/);
-
-    if (!hasSpecies || !hasColor || !hasSize) {
-      return `⚠️ DESCRIPCIÓN INCOMPLETA. Para un match efectivo, necesito que incluyas:
-
-${!hasSpecies ? '❌ Especie (perro, gato, etc.)' : '✅ Especie'}
-${!hasColor ? '❌ Color predominante' : '✅ Color'}
-${!hasSize ? '❌ Tamaño aproximado' : '✅ Tamaño'}
-
-También incluye si tiene collar, marcas distintivas, tipo de pelaje, etc.
-
-Por favor, proporciona una descripción MÁS DETALLADA antes de continuar.`;
     }
 
     // Combinar ubicación completa incluyendo ciudad y país
@@ -652,23 +636,29 @@ El match ha sido confirmado automáticamente y ambas partes pueden contactarse d
   },
   {
     name: "createFoundPetSightingTool",
-    description: `🆕 ACTUALIZADO: Registra avistamientos de mascotas encontradas con DATOS OBLIGATORIOS para match efectivo.
+    description: `Registra avistamientos de mascotas encontradas. Procesa el reporte con la información disponible.
 
-📋 CAMPOS OBLIGATORIOS:
-• finderPhone - Teléfono de quien encontró
-• finderName - Nombre de quien encontró
-• petDescription - Descripción DETALLADA (mínimo 20 caracteres) que DEBE incluir:
+📋 CAMPOS OBLIGATORIOS (sin estos NO funciona):
+• finderPhone - Teléfono de quien encontró (requerido)
+• finderName - Nombre de quien encontró (requerido)
+• locationFound - Ubicación específica donde se encontró (requerido)
+• cityFound - Ciudad (requerido)
+• countryFound - País (requerido)
+• photoUrl - URL de la foto de la mascota (OBLIGATORIA)
+
+📝 CAMPO DE DESCRIPCIÓN:
+• petDescription - Descripción de la mascota (mínimo 20 caracteres)
+  SUGERENCIAS para mejor match (pide estos datos si faltan, pero NO bloquees el reporte):
   - Especie (perro, gato, etc.)
-  - Color predominante
+  - Color(es) predominante(s)
   - Tamaño aproximado
-  - Tipo de pelaje si es visible
-  - Marcas distintivas (collar, manchas, cicatrices, etc.)
-• locationFound - Ubicación específica
-• cityFound - Ciudad
-• countryFound - País
-• photoUrl - FOTO CLARA de la mascota (YA NO ES OPCIONAL)
+  - Tipo de pelaje
+  - Marcas distintivas (collar, manchas, cicatrices)
 
-⚠️ Sin foto y descripción detallada, el match es casi imposible.`,
+🎯 OPCIONAL (mejora el match):
+• alertId - ID de alerta si ya confirmó match con una mascota específica
+
+💡 ESTRATEGIA: Pide la información sugerida conversacionalmente, pero si el usuario ya dio suficiente información (aunque no sea perfecta), procede con el reporte. La foto + descripción básica es suficiente para crear el avistamiento.`,
     schema: createFoundPetSightingSchema,
   }
 );
@@ -986,17 +976,32 @@ export const initiateSubscriptionTool = tool(
       const availablePlans = await getAvailablePlans();
       let plansList = "📋 **PLANES DISPONIBLES:**\n\n";
       
-      availablePlans.forEach((plan, index) => {
+      availablePlans.forEach((plan: any, index: number) => {
         const petLimitText = plan.pet_limit >= 999 
           ? "mascotas ilimitadas" 
           : `${plan.pet_limit} mascota${plan.pet_limit > 1 ? 's' : ''}`;
-        const priceText = plan.price.toLocaleString('es-CO', { 
-          style: 'currency', 
-          currency: 'COP',
-          minimumFractionDigits: 0 
-        });
         
-        plansList += `${index + 1}. **${plan.name}:** ${priceText}/año (${petLimitText})\n`;
+        // Mostrar con descuento si aplica
+        if (plan.hasDiscount) {
+          const formattedMarketingPrice = plan.marketingPrice.toLocaleString('es-CO', { 
+            style: 'currency', 
+            currency: 'COP',
+            minimumFractionDigits: 0 
+          });
+          const formattedRealPrice = plan.price.toLocaleString('es-CO', { 
+            style: 'currency', 
+            currency: 'COP',
+            minimumFractionDigits: 0 
+          });
+          plansList += `${index + 1}. **${plan.name}:** ~~${formattedMarketingPrice}~~ ${formattedRealPrice}/año (${petLimitText}) 🎁\n`;
+        } else {
+          const priceText = plan.price.toLocaleString('es-CO', { 
+            style: 'currency', 
+            currency: 'COP',
+            minimumFractionDigits: 0 
+          });
+          plansList += `${index + 1}. **${plan.name}:** ${priceText}/año (${petLimitText})\n`;
+        }
       });
       
       return `❌ No se encontró el plan "${planIdentifier}". \n\n${plansList}\n\nPor favor, especifica el nombre exacto del plan que te interesa.`;
@@ -1011,19 +1016,46 @@ export const initiateSubscriptionTool = tool(
 
     const planInfo = result.planSelected;
     let planDescription = '';
+    let promotionMessage = '';
+    
     if (planInfo) {
       const petLimitText = planInfo.pet_limit >= 999 
         ? "mascotas ilimitadas" 
         : `${planInfo.pet_limit} mascota${planInfo.pet_limit > 1 ? 's' : ''}`;
-      const priceText = planInfo.price.toLocaleString('es-CO', { 
-        style: 'currency', 
-        currency: 'COP',
-        minimumFractionDigits: 0 
-      });
-      planDescription = `**${planInfo.name}** (${priceText}/año - ${petLimitText})`;
+      
+      // Obtener información de marketing
+      const marketingInfo = getMarketingPrice(planInfo.name, planInfo.price);
+      
+      if (marketingInfo.hasDiscount) {
+        const formattedMarketingPrice = marketingInfo.marketingPrice.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        const formattedRealPrice = marketingInfo.realPrice.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        const formattedDiscount = marketingInfo.discount.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        
+        planDescription = `**${planInfo.name}** (~~${formattedMarketingPrice}~~ **${formattedRealPrice}/año** - ${petLimitText})`;
+        promotionMessage = `\n🎉 **¡Aprovecha el descuento del ${marketingInfo.discountPercentage}%!** Ahorras ${formattedDiscount}\n`;
+      } else {
+        const priceText = planInfo.price.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        planDescription = `**${planInfo.name}** (${priceText}/año - ${petLimitText})`;
+      }
     }
 
-    return `🎉 ¡Excelente! Tu perfil está completo y puedes proceder con la suscripción ${planDescription}.
+    return `🎉 ¡Excelente! Tu perfil está completo y puedes proceder con la suscripción ${planDescription}.${promotionMessage}
 
 💳 **Información para el Pago:**
 🏦 **Banco:** ${result.bankInfo.bank}
@@ -1042,7 +1074,7 @@ export const initiateSubscriptionTool = tool(
   },
   {
     name: "initiateSubscriptionTool", 
-    description: "Inicia el proceso de suscripción para un plan específico mostrando la información bancaria para el pago. Acepta tanto IDs de plan como nombres (ej: 'huellita', 'plan 1', 'doble huella', etc.). El sistema automáticamente encontrará el plan correcto.",
+    description: "Inicia el proceso de suscripción para un plan específico mostrando la información bancaria para el pago. Incluye información de descuentos cuando aplique. Acepta tanto IDs de plan como nombres (ej: 'huellita', 'plan 1', 'doble huella', etc.). El sistema automáticamente encontrará el plan correcto.",
     schema: z.object({
       phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
       planIdentifier: z.string().min(1, "El identificador del plan (nombre o ID) es obligatorio"),
@@ -1080,24 +1112,54 @@ export const showAvailablePlansTool = tool(
     }
     
     let plansMessage = "📋 **PLANES DISPONIBLES DE OLFATEA:**\n\n";
+    let hasPromotions = false;
     
-    plans.forEach((plan, index) => {
-      const formattedPrice = plan.price.toLocaleString('es-CO', { 
-        style: 'currency', 
-        currency: 'COP',
-        minimumFractionDigits: 0 
-      });
-      
+    plans.forEach((plan: any, index: number) => {
       // Manejar caso especial de plan ilimitado (999 = ilimitadas)
       const petLimitText = plan.pet_limit >= 999 
         ? "Ilimitadas mascotas" 
         : `Hasta ${plan.pet_limit} ${plan.pet_limit === 1 ? 'mascota' : 'mascotas'}`;
       
       plansMessage += `**${index + 1}. ${plan.name}**\n`;
-      plansMessage += `💰 Precio: ${formattedPrice} anuales\n`;
+      
+      // Si tiene descuento, mostrar precio tachado y oferta
+      if (plan.hasDiscount) {
+        hasPromotions = true;
+        const formattedMarketingPrice = plan.marketingPrice.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        const formattedRealPrice = plan.price.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        const formattedDiscount = plan.discount.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        
+        plansMessage += `💰 Precio: ~~${formattedMarketingPrice}~~ **¡Ahora ${formattedRealPrice}!** 🎁\n`;
+        plansMessage += `🎉 **AHORRO: ${formattedDiscount} (${plan.discountPercentage}% OFF)**\n`;
+      } else {
+        // Sin descuento, mostrar precio normal
+        const formattedPrice = plan.price.toLocaleString('es-CO', { 
+          style: 'currency', 
+          currency: 'COP',
+          minimumFractionDigits: 0 
+        });
+        plansMessage += `💰 Precio: ${formattedPrice} anuales\n`;
+      }
+      
       plansMessage += `🐾 Mascotas: ${petLimitText}\n`;
       plansMessage += `⏱️ Duración: ${plan.duration_months} meses\n\n`;
     });
+    
+    if (hasPromotions) {
+      plansMessage += "🔥 **¡OFERTA ESPECIAL!** Los planes de 1 a 4 mascotas tienen 50% de descuento. ¡Excelente momento para suscribirte!\n\n";
+    }
     
     plansMessage += "💡 Todos los planes incluyen:\n";
     plansMessage += "• Registro completo de mascotas\n";
@@ -1110,7 +1172,7 @@ export const showAvailablePlansTool = tool(
   },
   {
     name: "showAvailablePlansTool",
-    description: "Muestra todos los planes de suscripción disponibles con precios, límites de mascotas y características. Usar cuando el usuario pregunte por planes o durante el proceso de suscripción.",
+    description: "Muestra todos los planes de suscripción disponibles con precios, límites de mascotas y características. Incluye información de descuentos cuando aplique. Usar cuando el usuario pregunte por planes o durante el proceso de suscripción.",
     schema: z.object({}),
   }
 );
