@@ -737,7 +737,8 @@ const updateCompleteProfileSchema = z.object({
 // Esquema Zod para procesar comprobante de pago
 const processPaymentProofSchema = z.object({
   phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
-  proofImageUrl: z.string().url("La URL de la imagen del comprobante debe ser válida").min(1, "La URL de la imagen del comprobante es obligatoria"),
+  proofImageUrl: z.string().url("La URL debe ser válida").min(1, "La URL es obligatoria"),
+  planIdentifier: z.string().optional().describe("El nombre del plan (ej: 'Huellita', 'Plan 1') SI el usuario lo menciona o si se necesita reintentar la activación.")
 });
 
 export const validateCompleteProfileTool = tool(
@@ -1083,20 +1084,27 @@ export const initiateSubscriptionTool = tool(
 );
 
 export const processPaymentProofTool = tool(
-  async ({ phoneNumber, proofImageUrl }) => {
-    const result = await processPaymentProof(phoneNumber, proofImageUrl);
+  async ({ phoneNumber, proofImageUrl, planIdentifier }) => {
+    // Pasamos el planIdentifier a la función
+    const result = await processPaymentProof(phoneNumber, proofImageUrl, planIdentifier);
 
     if (!result.success) {
+      // Si el error es específicamente que falta el plan, devolvemos un mensaje guía para la IA
+      if (result.error === "PLAN_NOT_SELECTED") {
+        return `⚠️ ALERTA: Recibí el comprobante, pero el sistema no sabe qué plan activar. 
+        
+        ACCIÓN REQUERIDA: Pregúntale al usuario: "¿Qué plan estás pagando con este comprobante?"
+        
+        Cuando te responda (ej: "Es el plan Huellita"), vuelve a usar esta misma herramienta 'processPaymentProofTool' enviando la misma URL de la foto Y el nombre del plan en el campo 'planIdentifier'.`;
+      }
       return `❌ ${result.message}`;
     }
 
-    // La respuesta ya está formateada en la función processPaymentProof
-    // Solo devolvemos el mensaje directamente
     return result.message;
   },
   {
     name: "processPaymentProofTool",
-    description: "Procesa el comprobante de pago enviado por el usuario y ACTIVA INMEDIATAMENTE la suscripción, luego notifica al admin para validación posterior. La suscripción queda activa desde el momento del envío del comprobante.",
+    description: "Procesa el comprobante de pago. Si se proporciona 'planIdentifier', asigna ese plan al usuario y ACTIVA INMEDIATAMENTE la suscripción. Si no se pasa plan y el usuario no tenía uno seleccionado previamente, fallará pidiendo que se pregunte el plan.",
     schema: processPaymentProofSchema,
   }
 );

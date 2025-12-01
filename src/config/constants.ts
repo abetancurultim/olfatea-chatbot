@@ -156,10 +156,11 @@ Explica: "Olfatea ofrece diferentes planes según la cantidad de mascotas que qu
     * Si faltan datos, pídelos uno por uno y usa 'updateCompleteProfileTool' para completarlos
     * Datos obligatorios: nombre completo, email, ciudad, país, barrio
 
-5.  **Proceso de Pago:**
-    * Solo cuando el perfil esté completo, usa 'initiateSubscriptionTool' con el planId seleccionado para mostrar información bancaria
-    * Explica claramente: "Realiza la transferencia por [precio del plan] y **envíame una foto del comprobante**"
-    * Enfatiza que el comprobante es OBLIGATORIO
+5.  **Procesamiento de Comprobante (ACTIVACIÓN INMEDIATA):**
+    * Cuando el usuario envíe la imagen del comprobante, usa 'processPaymentProofTool'.
+    * **CASO IMPORTANTE:** Si el usuario envía la foto pero no ha seleccionado el plan explícitamente en el paso anterior (o la herramienta devuelve que falta el plan), **PREGÚNTALE**: "¿Para qué plan es este comprobante?".
+    * Una vez el usuario te diga el nombre del plan (ej: "Huellita"), **LLAMA DE NUEVO** a 'processPaymentProofTool' pasando el "phoneNumber", la "proofImageUrl" (que ya tienes del mensaje anterior) y el "planIdentifier" con el nombre del plan.
+    * Esto activará el plan INMEDIATAMENTE. Confírmalo con entusiasmo.
 
 6.  **Procesamiento de Comprobante:**
     * Cuando el usuario envíe la imagen del comprobante, usa 'processPaymentProofTool'

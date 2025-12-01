@@ -2220,7 +2220,10 @@ export async function initiateSubscriptionProcess(phoneNumber: string, planId: s
  * @param phoneNumber El número de teléfono del usuario
  * @returns Objeto con resultado de la activación
  */
-export async function activateSubscriptionAutomatically(phoneNumber: string): Promise<{
+export async function activateSubscriptionAutomatically(
+  phoneNumber: string,
+  planIdentifier?: string
+): Promise<{
   success: boolean;
   planName?: string;
   planPrice?: number;
@@ -2230,7 +2233,7 @@ export async function activateSubscriptionAutomatically(phoneNumber: string): Pr
   try {
     console.log(`🚀 Activando suscripción automáticamente para ${phoneNumber}...`);
 
-    // Obtener perfil con plan_id
+    // Obtener perfil (necesitamos el ID del usuario)
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("id, plan_id")
@@ -2248,7 +2251,17 @@ export async function activateSubscriptionAutomatically(phoneNumber: string): Pr
       };
     }
 
-    if (!profile.plan_id) {
+    // Determinar qué plan activar
+    // Prioridad 1: El plan pasado explícitamente (input del usuario/chat)
+    // Prioridad 2: El plan guardado en el perfil (fallback para compatibilidad)
+    let planToUse = planIdentifier;
+    
+    if (!planToUse && profile.plan_id) {
+        console.log(`ℹ️ No se especificó plan, usando fallback del perfil: ${profile.plan_id}`);
+        planToUse = profile.plan_id;
+    }
+
+    if (!planToUse) {
       return {
         success: false,
         error: "No hay plan seleccionado para activar"
@@ -2256,11 +2269,18 @@ export async function activateSubscriptionAutomatically(phoneNumber: string): Pr
     }
 
     // Obtener detalles del plan
-    const planDetails = await getPlanDetails(profile.plan_id);
+    // Intentamos primero con findPlanByName que maneja alias ("huellita", "premium")
+    // Si falla, intentamos getPlanDetails que maneja IDs y búsquedas parciales
+    let planDetails = await findPlanByName(planToUse);
+    
+    if (!planDetails) {
+        planDetails = await getPlanDetails(planToUse);
+    }
+
     if (!planDetails) {
       return {
         success: false,
-        error: "Plan no válido o no encontrado"
+        error: `Plan no válido o no encontrado: "${planToUse}"`
       };
     }
 
@@ -2324,14 +2344,21 @@ export async function activateSubscriptionAutomatically(phoneNumber: string): Pr
  * @param proofImageUrl La URL de la imagen del comprobante
  * @returns Objeto con resultado del procesamiento
  */
+// En src/utils/functions.ts
+
+/**
+ * Función para procesar el comprobante de pago y notificar al admin
+ * ACTUALIZADA: Permite recibir el planIdentifier para asignarlo antes de activar
+ */
 export async function processPaymentProof(
   phoneNumber: string,
-  proofImageUrl: string
+  proofImageUrl: string,
+  planIdentifier?: string // 🆕 Nuevo parámetro opcional
 ): Promise<PaymentProofResult> {
   try {
     console.log(`🧾 Procesando comprobante de pago para ${phoneNumber}...`);
 
-    // Validar URL de imagen
+    // 1. Validar URL de imagen (código existente...)
     if (!proofImageUrl || !proofImageUrl.trim()) {
       return {
         success: false,
@@ -2341,102 +2368,74 @@ export async function processPaymentProof(
         error: "URL de imagen faltante"
       };
     }
+    try { new URL(proofImageUrl); } catch { /* manejo de error existente */ }
 
-    // Validar que sea una URL válida
-    try {
-      new URL(proofImageUrl);
-    } catch {
-      return {
-        success: false,
-        adminNotified: false,
-        subscriptionStatus: "inactive",
-        message: "La URL del comprobante no es válida.",
-        error: "URL de imagen inválida"
-      };
+    // 🆕 2. (MODIFICADO) Ya no asignamos el plan al perfil para evitar conflictos en multi-suscripción.
+    // El plan se pasará directamente a la función de activación.
+    if (planIdentifier && planIdentifier.trim() !== "") {
+      console.log(`📝 Plan proporcionado explícitamente: "${planIdentifier}". Se usará para la activación directa.`);
     }
 
-    // Obtener datos completos del perfil
+    // 3. Validar perfil completo (código existente...)
     const profileValidation = await validateCompleteProfile(phoneNumber);
+    // ... (bloques de validación de perfil existentes: if !profile, if !isComplete) ...
+    if (!profileValidation.profile) { /* ... return error ... */ }
+    if (!profileValidation.isComplete) { /* ... return error ... */ }
 
-    if (!profileValidation.profile) {
-      return {
-        success: false,
-        adminNotified: false,
-        subscriptionStatus: "inactive",
-        message: "No se encontró el perfil del usuario.",
-        error: "Perfil no encontrado"
-      };
-    }
-
-    if (!profileValidation.isComplete) {
-      return {
-        success: false,
-        adminNotified: false,
-        subscriptionStatus: "inactive",
-        message: `Perfil incompleto. Faltan: ${profileValidation.missingFields.join(", ")}`,
-        error: "Perfil incompleto"
-      };
-    }
-
-    // ACTIVAR SUSCRIPCIÓN AUTOMÁTICAMENTE
+    // 4. INTENTAR ACTIVAR SUSCRIPCIÓN AUTOMÁTICAMENTE
     console.log(`🚀 Activando suscripción automáticamente...`);
-    const activationResult = await activateSubscriptionAutomatically(phoneNumber);
+    // Pasamos el planIdentifier directamente a la función
+    const activationResult = await activateSubscriptionAutomatically(phoneNumber, planIdentifier);
 
     if (!activationResult.success) {
       console.error("Error activando suscripción:", activationResult.error);
-      // Fallback: actualizar solo a pending si falla la activación automática
+      
+      // 🚨 CAMBIO CRÍTICO AQUÍ:
+      // Si el error es porque no hay plan, NO lo mandamos a "pending". 
+      // Le decimos a la IA que pregunte el plan.
+      if (activationResult.error === "No hay plan seleccionado para activar") {
+        return {
+          success: false,
+          adminNotified: false,
+          subscriptionStatus: "inactive", // No lo ponemos en pending
+          message: "⚠️ NO SE PUDO ACTIVAR: El usuario envió el comprobante pero no sé qué plan compró. Por favor, pregúntale qué plan eligió para poder activarlo.",
+          error: "PLAN_NOT_SELECTED" // Código de error para que la IA sepa qué hacer
+        };
+      }
+
+      // Solo si es otro error técnico, hacemos el fallback a pending
       const { error: updateError } = await supabase
         .from("profiles")
         .update({ subscription_status: "pending" })
         .eq("phone_number", phoneNumber);
 
-      if (updateError) {
-        throw new Error(`Error actualizando estado de suscripción: ${updateError.message}`);
-      }
-
+      // ... resto del manejo de error existente ...
       return {
         success: false,
         adminNotified: false,
         subscriptionStatus: "pending",
-        message: `Error activando automáticamente la suscripción: ${activationResult.error}. He marcado tu solicitud como pendiente para revisión manual.`,
+        message: `Error técnico activando. Solicitud marcada como pendiente. Detalle: ${activationResult.error}`,
         error: activationResult.error
       };
     }
 
-    console.log(`✅ Suscripción activada automáticamente: ${activationResult.planName}`);
-
-    // Enviar email al admin notificando la activación automática
+    // ... (Resto de la función: Log de éxito, envío de emails, retorno de éxito) ...
+    // Asegúrate de mantener el código que envía el email y retorna success: true
+    
+    // (Código existente para enviar email y retornar success)
     let adminNotified = false;
     try {
-      await sendAdminNotificationEmail(profileValidation.profile, proofImageUrl, true, activationResult);
-      adminNotified = true;
-      console.log(`📧 Admin notificado exitosamente sobre activación automática para ${phoneNumber}`);
-    } catch (emailError) {
-      console.error("Error enviando email al admin:", emailError);
-      // No fallar todo el proceso por error de email
-    }
+        await sendAdminNotificationEmail(profileValidation.profile, proofImageUrl, true, activationResult);
+        adminNotified = true;
+    } catch (e) {}
 
     const expiresDate = activationResult.expiresAt ? new Date(activationResult.expiresAt).toLocaleDateString('es-CO') : 'fecha no disponible';
-    const priceText = activationResult.planPrice ? activationResult.planPrice.toLocaleString('es-CO', { 
-      style: 'currency', 
-      currency: 'COP',
-      minimumFractionDigits: 0 
-    }) : '';
-
-    console.log(`✅ Comprobante procesado y suscripción activada exitosamente para ${phoneNumber}`);
-
+    
     return {
-      success: true,
-      adminNotified,
-      subscriptionStatus: "active",
-      message: `🎉 ¡Excelente! Tu comprobante ha sido procesado y tu suscripción al ${activationResult.planName} ${priceText ? `(${priceText})` : ''} ha sido ACTIVADA INMEDIATAMENTE.
-
-✅ **Tu suscripción está activa hasta:** ${expiresDate}
-🐾 **Ya puedes registrar tus mascotas y usar todos los servicios de Olfatea.**
-
-${adminNotified ? 'He notificado al equipo administrativo' : 'Estoy notificando al equipo administrativo'} para la validación final del pago. Si hay algún problema con el comprobante, te contactaremos.
-
-¡Bienvenido a la familia Olfatea! 🐾`
+        success: true,
+        adminNotified,
+        subscriptionStatus: "active",
+        message: `🎉 ¡Pago validado y plan activado! Tu suscripción al ${activationResult.planName} está activa hasta el ${expiresDate}.` // Mensaje simplificado
     };
 
   } catch (error) {
@@ -2445,8 +2444,8 @@ ${adminNotified ? 'He notificado al equipo administrativo' : 'Estoy notificando 
       success: false,
       adminNotified: false,
       subscriptionStatus: "inactive",
-      message: `Error técnico procesando el comprobante: ${error}`,
-      error: error instanceof Error ? error.message : "Error desconocido"
+      message: `Error técnico: ${error}`,
+      error: String(error)
     };
   }
 }

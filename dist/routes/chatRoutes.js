@@ -1017,9 +1017,10 @@ router.post("/olfatea/receive-message", (req, res) => __awaiter(void 0, void 0, 
 }));
 // Ruta para enviar una plantilla de WhatsApp
 router.post("/olfatea/send-template", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const { to, templateId, ownerName, petName, finderName, finderPhone, twilioPhoneNumber } = req.body; // Agregar advisorId
+    const { to, templateId, ownerName, petName, finderName, finderPhone, photoPatchUrl, twilioPhoneNumber } = req.body; // Agregar advisorId
     const user = "Notifications"; // Aquí puedes obtener el usuario real si tienes autenticación
     const advisorId = req.body.advisorId || "Notifications"; // Obtener advisorId del cuerpo de la solicitud o usar "Notifications" por defecto
+    console.log("Photo URL:", photoPatchUrl);
     try {
         const message = yield client.messages.create({
             // from: "whatsapp:+573052227183",
@@ -1028,7 +1029,7 @@ router.post("/olfatea/send-template", (req, res) => __awaiter(void 0, void 0, vo
             to: `whatsapp:${to}`,
             contentSid: templateId,
             // messagingServiceSid: "MGe5ebd75ff86ad20dbe6c0c1d09bfc081",
-            contentVariables: JSON.stringify({ 1: ownerName, 2: petName, 3: finderName, 4: finderPhone }),
+            contentVariables: JSON.stringify({ 1: ownerName, 2: petName, 3: finderName, 4: finderPhone, 5: photoPatchUrl }),
             statusCallback: `${statusCallbackUrl}/asadores/webhook/status`,
         });
         console.log("body", message.body);
