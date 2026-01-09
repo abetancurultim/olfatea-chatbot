@@ -1,0 +1,29 @@
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+import { sendPetSightingNotification } from "./utils/functions.js";
+function test() {
+    return __awaiter(this, void 0, void 0, function* () {
+        const photoUrl = "https://firebasestorage.googleapis.com/v0/b/coltefinanciera-8a40a.appspot.com/o/images%2F0001perro_mo%C3%B1o.jpg?alt=media&token=77f23cc1-03c3-4cce-9045-a1a5a1395cf0";
+        const myPhone = "+573188152674";
+        console.log("🚀 Iniciando prueba de notificación...");
+        try {
+            yield sendPetSightingNotification(myPhone, "Andres", // ownerName
+            "Moño", // petName
+            "Buscador de Prueba", // finderName
+            "+573000000000", // finderPhone
+            photoUrl);
+            console.log("✅ Prueba finalizada exitosamente");
+        }
+        catch (error) {
+            console.error("❌ Error en la prueba:", error);
+        }
+    });
+}
+test();

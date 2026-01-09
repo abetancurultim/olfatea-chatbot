@@ -3020,7 +3020,7 @@ interface CityUser {
 
 /**
  * Función para obtener usuarios de una ciudad específica
- * @param city El nombre de la ciudad (será normalizado automáticamente)
+ * @param city El nombre de la ciudad (se normaliza automáticamente)
  * @param excludePhone Número de teléfono a excluir (ej: el dueño de la mascota)
  * @returns Array de usuarios de la ciudad o array vacío si hay error
  */
@@ -3224,5 +3224,37 @@ export async function sendLostPetAlertToCity(
     result.message = `Error crítico: ${error instanceof Error ? error.message : 'Error desconocido'}`;
     return result;
   }
+}
+
+/**
+ * Función para obtener la foto y detalles de una mascota perdida por su nombre
+ * Consulta la tabla active_lost_pets_details
+ * @param petName El nombre de la mascota a buscar
+ * @returns Objeto con detalles de la mascota y alerta, o null si no se encuentra
+ */
+export async function getLostPetPhotoByName(petName: string): Promise<any | null> {
+  // console.log(`🔎 Buscando foto de mascota perdida: "${petName}"`);
+
+  if (!petName || petName.trim() === "") {
+    return null;
+  }
+
+  // Usamos ilike para búsqueda insensible a mayúsculas/minúsculas
+  const { data, error } = await supabase
+    .from('active_lost_pets_details')
+    .select('alert_id, pet_name, species, breed, gender, pet_photo_url, last_seen_description, alert_notes, owner_name, owner_phone')
+    .ilike('pet_name', petName.trim())
+    .limit(1);
+
+  if (error) {
+    console.error("❌ Error al buscar foto de mascota perdida:", error.message);
+    return null;
+  }
+
+  if (!data || data.length === 0) {
+    return null;
+  }
+
+  return data[0];
 }
 

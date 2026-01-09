@@ -8,6 +8,7 @@ import {
   getOwnerPets,
   getOwnerPetsOptimized,
   getOwnerActiveLostPets,
+  getLostPetPhotoByName, // Nueva función para obtener foto de mascota perdida
   updatePet,
   createFoundPetSighting,
   sendPetSightingNotification,
@@ -1216,6 +1217,53 @@ export const validateCurrentPetLimitTool = tool(
     description: "Verifica rápidamente si un usuario puede registrar más mascotas sin intentar el registro completo. Muestra información clara del plan actual y límites.",
     schema: z.object({
       phoneNumber: z.string().min(1, "El número de teléfono es obligatorio"),
+    }),
+  }
+);
+
+export const getLostPetPhotoTool = tool(
+  async ({ petName }) => {
+    const petInfo = await getLostPetPhotoByName(petName);
+
+    if (!petInfo) {
+      return `⚠️ No encontré una alerta activa para una mascota llamada "${petName}" en nuestra base de datos actual.\n\nEs posible que ya la hayan encontrado y la alerta se haya cerrado, o que no haya sido reportada con nosotros aún.`;
+    }
+
+    const species = petInfo.species || 'No especificada';
+    const breed = petInfo.breed || 'No especificada';
+    const gender = petInfo.gender || 'No especificado';
+    const location = petInfo.alert_notes || 'No especificada';
+    const description = petInfo.last_seen_description || 'Sin descripción adicional';
+
+    if (!petInfo.pet_photo_url) {
+      return `⚠️ La mascota **${petInfo.pet_name}** tiene una alerta activa, pero lamentablemente el dueño no cargó una fotografía al momento de reportarla.
+
+🐾 **Datos de la mascota:**
+• Especie: ${species}
+• Raza: ${breed}
+• Género: ${gender}
+
+📍 **Ubicación de pérdida:** ${location}
+📝 **Descripción:** ${description}`;
+    }
+
+    return `✅ Aquí tienes la foto y detalles de **${petInfo.pet_name}** para difundirla:
+
+🖼️ **FOTO:** ${petInfo.pet_photo_url}
+
+🐾 **Datos de la mascota:**
+• Especie: ${species}
+• Raza: ${breed}
+• Género: ${gender}
+
+📍 **Ubicación:** ${location}
+📝 **Descripción:** ${description}`;
+  },
+  {
+    name: "getLostPetPhotoTool",
+    description: "Busca la foto y detalles de una mascota perdida específica por su nombre para ayudar en su difusión. Verifica si existe una alerta activa en el sistema. Úsalo cuando el usuario pida información o la foto de una mascota perdida específica (ej: 'dame la foto de Lamby').",
+    schema: z.object({
+      petName: z.string().min(1, "El nombre de la mascota es obligatorio"),
     }),
   }
 );

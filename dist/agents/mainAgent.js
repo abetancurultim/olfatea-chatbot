@@ -7,7 +7,8 @@ import { createPetTool, updateProfileTool, createLostPetAlertTool, getOwnerPetsO
 // Nuevas herramientas de suscripción
 validateCompleteProfileTool, updateCompleteProfileTool, initiateSubscriptionTool, processPaymentProofTool, 
 // Nuevas herramientas de planes
-showAvailablePlansTool, validateCurrentPetLimitTool, } from "../tools/tools.js";
+showAvailablePlansTool, validateCurrentPetLimitTool, getLostPetPhotoTool, // Nueva tool para obtener fotos
+ } from "../tools/tools.js";
 import { MESSAGES } from "../config/constants.js";
 dotenv.config();
 const memory = new MemorySaver();
@@ -34,6 +35,7 @@ const tools = [
     getOwnerPetsOptimizedTool,
     createLostPetAlertTool,
     findLostPetsTool, // Nueva herramienta avanzada
+    getLostPetPhotoTool, // Buscar foto de mascota perdida
     createFoundPetSightingTool, // Herramienta UNIFICADA para avistamientos y matches
 ];
 const createModifyMessages = (phoneNumber) => (messages) => {

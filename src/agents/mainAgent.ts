@@ -24,6 +24,7 @@ import {
   // Nuevas herramientas de planes
   showAvailablePlansTool,
   validateCurrentPetLimitTool,
+  getLostPetPhotoTool, // Nueva tool para obtener fotos
 } from "../tools/tools.js";
 import { MESSAGES } from "../config/constants.js";
 
@@ -55,6 +56,7 @@ const tools = [
   getOwnerPetsOptimizedTool,
   createLostPetAlertTool,
   findLostPetsTool, // Nueva herramienta avanzada
+  getLostPetPhotoTool, // Buscar foto de mascota perdida
   createFoundPetSightingTool, // Herramienta UNIFICADA para avistamientos y matches
 ];
 
